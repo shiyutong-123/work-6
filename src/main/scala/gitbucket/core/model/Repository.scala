@@ -13,6 +13,7 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
     val registeredDate = column[java.util.Date]("REGISTERED_DATE")
     val updatedDate = column[java.util.Date]("UPDATED_DATE")
     val lastActivityDate = column[java.util.Date]("LAST_ACTIVITY_DATE")
+    val lastSyncTime = column[java.util.Date]("LAST_SYNC_TIME")
     val originUserName = column[String]("ORIGIN_USER_NAME")
     val originRepositoryName = column[String]("ORIGIN_REPOSITORY_NAME")
     val parentUserName = column[String]("PARENT_USER_NAME")
@@ -37,6 +38,7 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
           registeredDate,
           updatedDate,
           lastActivityDate,
+          lastSyncTime.?,
           originUserName.?,
           originRepositoryName.?,
           parentUserName.?,
@@ -67,6 +69,7 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
             repository._10,
             repository._11,
             repository._12,
+            repository._13,
             RepositoryOptions.apply.tupled.apply(options)
           )
         },
@@ -82,6 +85,7 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
                 r.registeredDate,
                 r.updatedDate,
                 r.lastActivityDate,
+                r.lastSyncTime,
                 r.originUserName,
                 r.originRepositoryName,
                 r.parentUserName,
@@ -108,6 +112,7 @@ case class Repository(
   registeredDate: java.util.Date,
   updatedDate: java.util.Date,
   lastActivityDate: java.util.Date,
+  lastSyncTime: Option[java.util.Date],
   originUserName: Option[String],
   originRepositoryName: Option[String],
   parentUserName: Option[String],

@@ -26,7 +26,8 @@ trait HandleCommentService {
     issue: Issue,
     content: Option[String],
     repository: RepositoryService.RepositoryInfo,
-    actionOpt: Option[String]
+    actionOpt: Option[String],
+    featureToggle: Boolean = true
   )(implicit context: Context, s: Session) = {
     context.loginAccount.flatMap { loginAccount =>
       val owner = repository.owner
@@ -64,7 +65,7 @@ trait HandleCommentService {
       val commentId = (content, action) match {
         case (None, None)         => None
         case (None, Some(action)) =>
-          Some(createComment(owner, name, userName, issue.issueId, action.capitalize, action))
+          Some(createComment(owner, name, userName, issue.issueId, action.capitalize, action, featureToggle))
         case (Some(content), _) =>
           val id = Some(
             createComment(
@@ -73,7 +74,8 @@ trait HandleCommentService {
               userName,
               issue.issueId,
               content,
-              action.map(_ + "_comment").getOrElse("comment")
+              action.map(_ + "_comment").getOrElse("comment"),
+              featureToggle
             )
           )
 
@@ -152,7 +154,8 @@ trait HandleCommentService {
     repository: RepositoryService.RepositoryInfo,
     issue: Issue,
     commentId: String,
-    content: Option[String]
+    content: Option[String],
+    featureToggle: Boolean = true
   )(implicit context: Context, s: Session): Option[(Issue, Int)] = {
     context.loginAccount.flatMap { loginAccount =>
       val owner = repository.owner
@@ -161,7 +164,7 @@ trait HandleCommentService {
       content match {
         case Some(content) =>
           // Update comment
-          val _commentId = Some(updateComment(owner, name, issue.issueId, commentId.toInt, content))
+          val _commentId = Some(updateComment(owner, name, issue.issueId, commentId.toInt, content, featureToggle))
           // Record comment activity
           val commentInfo = if (issue.isPullRequest) {
             PullRequestCommentInfo(owner, name, userName, content, issue.issueId)

@@ -583,7 +583,8 @@ trait IssuesService {
     loginUser: String,
     issueId: Int,
     content: String,
-    action: String
+    action: String,
+    featureToggle: Boolean = true
   )(implicit s: Session): Int = {
     Issues.filter(_.byPrimaryKey(owner, repository, issueId)).map(_.updatedDate).update(currentDate)
     IssueComments returning IssueComments.map(_.commentId) insert IssueComment(
@@ -594,7 +595,8 @@ trait IssuesService {
       commentedUserName = loginUser,
       content = content,
       registeredDate = currentDate,
-      updatedDate = currentDate
+      updatedDate = currentDate,
+      featureToggle = featureToggle
     )
   }
 
@@ -767,11 +769,11 @@ trait IssuesService {
       .update(priorityId, currentDate)
   }
 
-  def updateComment(owner: String, repository: String, issueId: Int, commentId: Int, content: String)(implicit
+  def updateComment(owner: String, repository: String, issueId: Int, commentId: Int, content: String, featureToggle: Boolean = true)(implicit
     s: Session
   ): Int = {
     Issues.filter(_.byPrimaryKey(owner, repository, issueId)).map(_.updatedDate).update(currentDate)
-    IssueComments.filter(_.byPrimaryKey(commentId)).map(t => (t.content, t.updatedDate)).update(content, currentDate)
+    IssueComments.filter(_.byPrimaryKey(commentId)).map(t => (t.content, t.updatedDate, t.featureToggle)).update(content, currentDate, featureToggle)
   }
 
   def deleteComment(owner: String, repository: String, issueId: Int, commentId: Int)(implicit

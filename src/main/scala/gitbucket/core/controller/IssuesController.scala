@@ -46,7 +46,7 @@ trait IssuesControllerBase extends ControllerBase {
     priorityId: Option[Int],
     labelNames: Option[String]
   )
-  private case class CommentForm(issueId: Int, content: String)
+  private case class CommentForm(issueId: Int, content: String, featureToggle: Boolean)
   private case class IssueStateForm(issueId: Int, content: Option[String])
 
   private val issueCreateForm = mapping(
@@ -67,7 +67,8 @@ trait IssuesControllerBase extends ControllerBase {
 
   private val commentForm = mapping(
     "issueId" -> label("Issue Id", number()),
-    "content" -> trim(label("Comment", text(required)))
+    "content" -> trim(label("Comment", text(required))),
+    "featureToggle" -> label("Feature Toggle", boolean())
   )(CommentForm.apply)
 
   private val issueStateForm = mapping(
@@ -216,7 +217,7 @@ trait IssuesControllerBase extends ControllerBase {
           params
             .get("action")
             .filter(_ => isEditableContent(issue.userName, issue.repositoryName, issue.openedUserName, loginAccount))
-        handleComment(issue, Some(form.content), repository, actionOpt) map { case (issue, id) =>
+        handleComment(issue, Some(form.content), repository, actionOpt, form.featureToggle) map { case (issue, id) =>
           redirect(
             s"/${repository.owner}/${repository.name}/${if (issue.isPullRequest) "pull" else "issues"}/${form.issueId}#comment-$id"
           )
@@ -245,7 +246,7 @@ trait IssuesControllerBase extends ControllerBase {
     context.withLoginAccount { loginAccount =>
       getComment(repository.owner, repository.name, params("id")).map { comment =>
         if (isEditableContent(repository.owner, repository.name, comment.commentedUserName, loginAccount)) {
-          updateComment(repository.owner, repository.name, comment.issueId, comment.commentId, form.content)
+          updateComment(repository.owner, repository.name, comment.issueId, comment.commentId, form.content, form.featureToggle)
           redirect(s"/${repository.owner}/${repository.name}/issue_comments/_data/${comment.commentId}")
         } else Unauthorized()
       } getOrElse NotFound()
@@ -301,7 +302,7 @@ trait IssuesControllerBase extends ControllerBase {
       getComment(repository.owner, repository.name, params("id")) map { x =>
         if (isEditableContent(x.userName, x.repositoryName, x.commentedUserName, loginAccount)) {
           params.get("dataType") collect {
-            case t if t == "html" => html.editcomment(x.content, x.commentId, repository)
+            case t if t == "html" => html.editcomment(x.content, x.commentId, x.featureToggle, repository)
           } getOrElse {
             contentType = formats("json")
             val content = helpers

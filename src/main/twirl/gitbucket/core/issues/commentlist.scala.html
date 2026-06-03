@@ -22,6 +22,11 @@
       <a href="#comment-@comment.commentId">
         @gitbucket.core.helper.html.datetimeago(comment.registeredDate)
       </a>
+      @if(comment.featureToggle){
+        <span class="label label-info">Feature Toggle: ON</span>
+      } else {
+        <span class="label label-default">Feature Toggle: OFF</span>
+      }
     </span>
     @if(comment.action != "commit" && comment.action != "merge" && comment.action != "refer"
     && (isManageable || context.loginAccount.exists(_.userName == comment.commentedUserName))){

@@ -5,17 +5,34 @@ import java.nio.charset.StandardCharsets
 import java.sql.Connection
 import java.util.UUID
 import gitbucket.core.model.Activity
+import gitbucket.core.plugin.PluginRegistry
+import gitbucket.core.service.SystemSettingsService.SystemSettings
 import gitbucket.core.util.Directory.ActivityLog
 import gitbucket.core.util.JDBCUtil
 import io.github.gitbucket.solidbase.Solidbase
 import io.github.gitbucket.solidbase.migration.{LiquibaseMigration, Migration}
 import io.github.gitbucket.solidbase.model.{Module, Version}
+import javax.servlet.ServletContext
 import org.json4s.{Formats, NoTypeHints}
 import org.json4s.jackson.Serialization
 import org.json4s.jackson.Serialization.write
+import org.slf4j.LoggerFactory
 
 import java.util.logging.Level
 import scala.util.Using
+
+trait PluginLifecycle {
+
+  def onInitialize(context: ServletContext, settings: SystemSettings, conn: Connection): Unit
+
+  def onShutdown(context: ServletContext, settings: SystemSettings): Unit
+
+  def onReload(context: ServletContext, settings: SystemSettings, conn: Connection): Unit
+}
+
+object PluginServiceDescriptor {
+  val ServicePath = "META-INF/services/gitbucket.core.plugin.Plugin"
+}
 
 object GitBucketCoreModule
     extends Module(
@@ -125,6 +142,25 @@ object GitBucketCoreModule
       new Version("4.45.0"),
       new Version("4.46.0", new LiquibaseMigration("update/gitbucket-core_4.46.xml")),
       new Version("4.46.1")
-    ) {
+    )
+    with PluginLifecycle {
+
+  private val logger = LoggerFactory.getLogger(getClass)
+
   java.util.logging.Logger.getLogger("liquibase").setLevel(Level.SEVERE)
+
+  override def onInitialize(context: ServletContext, settings: SystemSettings, conn: Connection): Unit = {
+    logger.info("Plugin lifecycle: initializing via ServiceLoader")
+    PluginRegistry.initialize(context, settings, conn)
+  }
+
+  override def onShutdown(context: ServletContext, settings: SystemSettings): Unit = {
+    logger.info("Plugin lifecycle: shutting down")
+    PluginRegistry.shutdown(context, settings)
+  }
+
+  override def onReload(context: ServletContext, settings: SystemSettings, conn: Connection): Unit = {
+    logger.info("Plugin lifecycle: reloading changed plugins")
+    PluginRegistry.reloadChangedPlugins(context, settings, conn)
+  }
 }

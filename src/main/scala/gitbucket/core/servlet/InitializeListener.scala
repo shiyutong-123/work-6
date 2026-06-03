@@ -87,9 +87,9 @@ class InitializeListener extends ServletContextListener with SystemSettingsServi
         // Install bundled plugins
         extractBundledPlugins()
 
-        // Load plugins
-        logger.info("Initialize plugins")
-        PluginRegistry.initialize(event.getServletContext, loadSystemSettings(), conn)
+        // Load plugins via PluginLifecycle
+        logger.info("Initialize plugins via PluginLifecycle")
+        GitBucketCoreModule.onInitialize(event.getServletContext, loadSystemSettings(), conn)
       }
 
       //    // Start Quartz scheduler
@@ -176,8 +176,8 @@ class InitializeListener extends ServletContextListener with SystemSettingsServi
   override def contextDestroyed(event: ServletContextEvent): Unit = {
 //    // Shutdown Quartz scheduler
 //    system.terminate()
-    // Shutdown plugins
-    PluginRegistry.shutdown(event.getServletContext, loadSystemSettings())
+    // Shutdown plugins via PluginLifecycle
+    GitBucketCoreModule.onShutdown(event.getServletContext, loadSystemSettings())
     // Close datasource
     Database.closeDataSource()
   }

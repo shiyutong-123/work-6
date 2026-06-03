@@ -104,6 +104,10 @@ packageOptions += Package.MainClass("JettyLauncher")
 // Assembly settings
 assembly / test := {}
 assembly / assemblyMergeStrategy := {
+  case PathList("META-INF", "services", xs @ _*) =>
+    xs.map(_.toLowerCase) match {
+      case _ => MergeStrategy.filterDistinctLines
+    }
   case PathList("META-INF", xs @ _*) =>
     xs.map(_.toLowerCase) match {
       case ("manifest.mf" :: Nil) => MergeStrategy.discard

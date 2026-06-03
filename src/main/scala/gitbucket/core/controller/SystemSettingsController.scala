@@ -2,6 +2,7 @@ package gitbucket.core.controller
 
 import java.io.FileInputStream
 import gitbucket.core.admin.html
+import gitbucket.core.GitBucketCoreModule
 import gitbucket.core.plugin.PluginRegistry
 import gitbucket.core.service.SystemSettingsService.*
 import gitbucket.core.service.{AccountService, RepositoryService}
@@ -366,7 +367,7 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
   })
 
   post("/admin/plugins/_reload")(adminOnly {
-    PluginRegistry.reload(request.getServletContext, loadSystemSettings(), request2Session(request).conn)
+    GitBucketCoreModule.onReload(request.getServletContext, loadSystemSettings(), request2Session(request).conn)
     flash.update("info", "All plugins were reloaded.")
     redirect("/admin/plugins")
   })

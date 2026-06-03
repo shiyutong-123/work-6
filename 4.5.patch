@@ -1,0 +1,533 @@
+diff --git a/build.sbt b/build.sbt
+index 867377eb..6cf4aed3 100644
+--- a/build.sbt
++++ b/build.sbt
+@@ -104,6 +104,10 @@ packageOptions += Package.MainClass("JettyLauncher")
+ // Assembly settings
+ assembly / test := {}
+ assembly / assemblyMergeStrategy := {
++  case PathList("META-INF", "services", xs @ _*) =>
++    xs.map(_.toLowerCase) match {
++      case _ => MergeStrategy.filterDistinctLines
++    }
+   case PathList("META-INF", xs @ _*) =>
+     xs.map(_.toLowerCase) match {
+       case ("manifest.mf" :: Nil) => MergeStrategy.discard
+diff --git a/src/main/scala/gitbucket/core/GitBucketCoreModule.scala b/src/main/scala/gitbucket/core/GitBucketCoreModule.scala
+index ff4b726d..223e6220 100644
+--- a/src/main/scala/gitbucket/core/GitBucketCoreModule.scala
++++ b/src/main/scala/gitbucket/core/GitBucketCoreModule.scala
+@@ -5,18 +5,35 @@ import java.nio.charset.StandardCharsets
+ import java.sql.Connection
+ import java.util.UUID
+ import gitbucket.core.model.Activity
++import gitbucket.core.plugin.PluginRegistry
++import gitbucket.core.service.SystemSettingsService.SystemSettings
+ import gitbucket.core.util.Directory.ActivityLog
+ import gitbucket.core.util.JDBCUtil
+ import io.github.gitbucket.solidbase.Solidbase
+ import io.github.gitbucket.solidbase.migration.{LiquibaseMigration, Migration}
+ import io.github.gitbucket.solidbase.model.{Module, Version}
++import javax.servlet.ServletContext
+ import org.json4s.{Formats, NoTypeHints}
+ import org.json4s.jackson.Serialization
+ import org.json4s.jackson.Serialization.write
++import org.slf4j.LoggerFactory
+ 
+ import java.util.logging.Level
+ import scala.util.Using
+ 
++trait PluginLifecycle {
++
++  def onInitialize(context: ServletContext, settings: SystemSettings, conn: Connection): Unit
++
++  def onShutdown(context: ServletContext, settings: SystemSettings): Unit
++
++  def onReload(context: ServletContext, settings: SystemSettings, conn: Connection): Unit
++}
++
++object PluginServiceDescriptor {
++  val ServicePath = "META-INF/services/gitbucket.core.plugin.Plugin"
++}
++
+ object GitBucketCoreModule
+     extends Module(
+       "gitbucket-core",
+@@ -125,6 +142,25 @@ object GitBucketCoreModule
+       new Version("4.45.0"),
+       new Version("4.46.0", new LiquibaseMigration("update/gitbucket-core_4.46.xml")),
+       new Version("4.46.1")
+-    ) {
++    )
++    with PluginLifecycle {
++
++  private val logger = LoggerFactory.getLogger(getClass)
++
+   java.util.logging.Logger.getLogger("liquibase").setLevel(Level.SEVERE)
++
++  override def onInitialize(context: ServletContext, settings: SystemSettings, conn: Connection): Unit = {
++    logger.info("Plugin lifecycle: initializing via ServiceLoader")
++    PluginRegistry.initialize(context, settings, conn)
++  }
++
++  override def onShutdown(context: ServletContext, settings: SystemSettings): Unit = {
++    logger.info("Plugin lifecycle: shutting down")
++    PluginRegistry.shutdown(context, settings)
++  }
++
++  override def onReload(context: ServletContext, settings: SystemSettings, conn: Connection): Unit = {
++    logger.info("Plugin lifecycle: reloading changed plugins")
++    PluginRegistry.reloadChangedPlugins(context, settings, conn)
++  }
+ }
+diff --git a/src/main/scala/gitbucket/core/controller/SystemSettingsController.scala b/src/main/scala/gitbucket/core/controller/SystemSettingsController.scala
+index b5f6d531..3fd39e8c 100644
+--- a/src/main/scala/gitbucket/core/controller/SystemSettingsController.scala
++++ b/src/main/scala/gitbucket/core/controller/SystemSettingsController.scala
+@@ -2,6 +2,7 @@ package gitbucket.core.controller
+ 
+ import java.io.FileInputStream
+ import gitbucket.core.admin.html
++import gitbucket.core.GitBucketCoreModule
+ import gitbucket.core.plugin.PluginRegistry
+ import gitbucket.core.service.SystemSettingsService.*
+ import gitbucket.core.service.{AccountService, RepositoryService}
+@@ -366,7 +367,7 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
+   })
+ 
+   post("/admin/plugins/_reload")(adminOnly {
+-    PluginRegistry.reload(request.getServletContext, loadSystemSettings(), request2Session(request).conn)
++    GitBucketCoreModule.onReload(request.getServletContext, loadSystemSettings(), request2Session(request).conn)
+     flash.update("info", "All plugins were reloaded.")
+     redirect("/admin/plugins")
+   })
+diff --git a/src/main/scala/gitbucket/core/plugin/PluginRegistry.scala b/src/main/scala/gitbucket/core/plugin/PluginRegistry.scala
+index a46c338a..dc4db878 100644
+--- a/src/main/scala/gitbucket/core/plugin/PluginRegistry.scala
++++ b/src/main/scala/gitbucket/core/plugin/PluginRegistry.scala
+@@ -3,7 +3,8 @@ package gitbucket.core.plugin
+ import java.io.{File, FilenameFilter}
+ import java.net.URLClassLoader
+ import java.nio.file.{Files, Paths, StandardWatchEventKinds}
+-import java.util.Base64
++import java.security.MessageDigest
++import java.util.{Base64, ServiceLoader}
+ import java.util.concurrent.ConcurrentLinkedQueue
+ import java.util.concurrent.ConcurrentHashMap
+ import javax.servlet.ServletContext
+@@ -64,6 +65,13 @@ class PluginRegistry {
+ 
+   def getPlugins(): List[PluginInfo] = plugins.asScala.toList
+ 
++  def removePlugin(pluginId: String): Option[PluginInfo] = {
++    plugins.asScala.find(_.pluginId == pluginId).map { info =>
++      plugins.remove(info)
++      info
++    }
++  }
++
+   def addImage(id: String, bytes: Array[Byte]): Unit = {
+     val encoded = Base64.getEncoder.encodeToString(bytes)
+     images.put(id, encoded)
+@@ -80,7 +88,7 @@ class PluginRegistry {
+   def getAnonymousAccessiblePaths(): Seq[String] = anonymousAccessiblePaths.asScala.toSeq
+ 
+   def addJavaScript(path: String, script: String): Unit =
+-    javaScripts.add((path, script)) // javaScripts += ((path, script))
++    javaScripts.add((path, script))
+ 
+   def getJavaScript(currentPath: String): List[String] =
+     javaScripts.asScala.filter(x => currentPath.matches(x._1)).toList.map(_._2)
+@@ -184,9 +192,76 @@ class PluginRegistry {
+     sshCommandProviders.asScala.toSeq
+ }
+ 
+-/**
+- * Provides entry point to PluginRegistry.
+- */
++object PluginCache {
++
++  private val logger = LoggerFactory.getLogger(getClass)
++
++  private val cache = new ConcurrentHashMap[String, PluginCacheEntry]()
++
++  case class PluginCacheEntry(
++    pluginId: String,
++    jarPath: String,
++    jarName: String,
++    lastModified: Long,
++    checksum: String
++  )
++
++  def put(pluginId: String, jarPath: String, jarName: String): PluginCacheEntry = {
++    val file = new File(jarPath)
++    val entry = PluginCacheEntry(
++      pluginId = pluginId,
++      jarPath = jarPath,
++      jarName = jarName,
++      lastModified = file.lastModified(),
++      checksum = computeChecksum(file)
++    )
++    cache.put(pluginId, entry)
++    entry
++  }
++
++  def get(pluginId: String): Option[PluginCacheEntry] = Option(cache.get(pluginId))
++
++  def remove(pluginId: String): Option[PluginCacheEntry] = Option(cache.remove(pluginId))
++
++  def isChanged(jarPath: String): Boolean = {
++    val file = new File(jarPath)
++    if (!file.exists()) return true
++    cache.asScala.find(_._2.jarPath == jarPath) match {
++      case Some((_, entry)) =>
++        entry.lastModified != file.lastModified() || entry.checksum != computeChecksum(file)
++      case None => true
++    }
++  }
++
++  def findChangedJars(jars: Seq[File]): Seq[File] = {
++    jars.filter { jar =>
++      val absPath = jar.getAbsolutePath
++      cache.asScala.find(_._2.jarPath == absPath) match {
++        case Some((_, entry)) =>
++          entry.lastModified != jar.lastModified() || entry.checksum != computeChecksum(jar)
++        case None => true
++      }
++    }
++  }
++
++  def getAllEntries: Map[String, PluginCacheEntry] = cache.asScala.toMap
++
++  def clear(): Unit = cache.clear()
++
++  def computeChecksum(file: File): String = {
++    try {
++      val digest = MessageDigest.getInstance("MD5")
++      val bytes = Files.readAllBytes(file.toPath)
++      digest.update(bytes)
++      digest.digest().map("%02x".format(_)).mkString
++    } catch {
++      case e: Exception =>
++        logger.warn(s"Failed to compute checksum for ${file.getAbsolutePath}", e)
++        file.lastModified().toString
++    }
++  }
++}
++
+ object PluginRegistry {
+ 
+   private val logger = LoggerFactory.getLogger(classOf[PluginRegistry])
+@@ -196,23 +271,49 @@ object PluginRegistry {
+   private var watcher: PluginWatchThread = null
+   private var extraWatcher: PluginWatchThread = null
+ 
+-  /**
+-   * Returns the PluginRegistry singleton instance.
+-   */
+   def apply(): PluginRegistry = instance
+ 
+-  /**
+-   * Reload all plugins.
+-   */
+   def reload(context: ServletContext, settings: SystemSettings, conn: java.sql.Connection): Unit = synchronized {
+     shutdown(context, settings)
+     instance = new PluginRegistry()
+     initialize(context, settings, conn)
+   }
+ 
+-  /**
+-   * Uninstall a specified plugin.
+-   */
++  def reloadChangedPlugins(
++    context: ServletContext,
++    settings: SystemSettings,
++    conn: java.sql.Connection
++  ): Unit = synchronized {
++    logger.info("Checking for plugin changes via cache")
++
++    val pluginDir = new File(PluginHome)
++    val pluginJars = listPluginJars(pluginDir)
++    val extraJars = extraPluginDir
++      .map { extraDir =>
++        listPluginJars(new File(extraDir))
++      }
++      .getOrElse(Nil)
++
++    val allJars = extraJars ++ pluginJars
++    val changedJars = PluginCache.findChangedJars(allJars)
++
++    if (changedJars.isEmpty) {
++      logger.info("No plugin changes detected, skipping reload")
++      return
++    }
++
++    changedJars.foreach { jar =>
++      logger.info(s"Detected change in plugin: ${jar.getName}")
++    }
++
++    logger.info("Performing full plugin reload due to detected changes")
++    shutdown(context, settings)
++    instance = new PluginRegistry()
++    initialize(context, settings, conn)
++
++    logger.info("Plugin reload finished")
++  }
++
+   def uninstall(pluginId: String, context: ServletContext, settings: SystemSettings, conn: java.sql.Connection): Unit =
+     synchronized {
+       shutdown(context, settings)
+@@ -223,6 +324,8 @@ object PluginRegistry {
+         })
+         .foreach(_.delete())
+ 
++      PluginCache.remove(pluginId)
++
+       instance = new PluginRegistry()
+       initialize(context, settings, conn)
+     }
+@@ -260,46 +363,58 @@ object PluginRegistry {
+     }
+   }
+ 
+-  /**
+-   * Initializes all installed plugins.
+-   */
+-  def initialize(context: ServletContext, settings: SystemSettings, conn: java.sql.Connection): Unit = synchronized {
+-    val pluginDir = new File(PluginHome)
+-    val manager = new JDBCVersionManager(conn)
+-
+-    // Clean installed directory
+-    val installedDir = new File(PluginHome, ".installed")
+-    if (installedDir.exists) {
+-      FileUtils.deleteDirectory(installedDir)
++  private def discoverPluginsViaServiceLoader(
++    classLoader: ClassLoader
++  ): List[Plugin] = {
++    try {
++      val serviceLoader = ServiceLoader.load(classOf[Plugin], classLoader)
++      serviceLoader.iterator().asScala.toList
++    } catch {
++      case e: Exception =>
++        logger.warn("ServiceLoader discovery failed, falling back to legacy loading", e)
++        Nil
+     }
+-    installedDir.mkdirs()
++  }
+ 
+-    val pluginJars = listPluginJars(pluginDir)
++  private def discoverPluginsLegacy(
++    classLoader: ClassLoader
++  ): List[Plugin] = {
++    try {
++      List(classLoader.loadClass("Plugin").getDeclaredConstructor().newInstance().asInstanceOf[Plugin])
++    } catch {
++      case _: ClassNotFoundException =>
++        logger.debug("No legacy Plugin class found in classloader")
++        Nil
++      case e: Exception =>
++        logger.warn("Legacy plugin loading failed", e)
++        Nil
++    }
++  }
+ 
+-    val extraJars = extraPluginDir
+-      .map { extraDir =>
+-        listPluginJars(new File(extraDir))
++  private def loadPluginFromJar(
++    installedJar: File,
++    pluginJar: File,
++    manager: JDBCVersionManager,
++    conn: java.sql.Connection,
++    context: ServletContext,
++    settings: SystemSettings
++  ): Unit = {
++    val classLoader =
++      new URLClassLoader(Array(installedJar.toURI.toURL), Thread.currentThread.getContextClassLoader)
++    try {
++      val pluginList = discoverPluginsViaServiceLoader(classLoader) match {
++        case Nil  => discoverPluginsLegacy(classLoader)
++        case list => list
+       }
+-      .getOrElse(Nil)
+ 
+-    (extraJars ++ pluginJars).foreach { pluginJar =>
+-      val installedJar = new File(installedDir, pluginJar.getName)
+-
+-      FileUtils.copyFile(pluginJar, installedJar)
+-      logger.info(s"Initialize ${pluginJar.getName}")
+-      val classLoader =
+-        new URLClassLoader(Array(installedJar.toURI.toURL), Thread.currentThread.getContextClassLoader)
+-      try {
+-        val plugin = classLoader.loadClass("Plugin").getDeclaredConstructor().newInstance().asInstanceOf[Plugin]
++      pluginList.foreach { plugin =>
+         val pluginId = plugin.pluginId
+ 
+-        // Check duplication
+         instance.getPlugins().find(_.pluginId == pluginId) match {
+           case Some(x) =>
+             logger.warn(s"Plugin ${pluginId} is duplicated. ${x.pluginJar.getName} is available.")
+             classLoader.close()
+           case None =>
+-            // Migration
+             val solidbase = new Solidbase()
+             solidbase
+               .migrate(
+@@ -310,7 +425,6 @@ object PluginRegistry {
+               )
+             conn.commit()
+ 
+-            // Check database version
+             val databaseVersion = manager.getCurrentVersion(plugin.pluginId)
+             val pluginVersion = plugin.versions.last.getVersion
+             if (databaseVersion != pluginVersion) {
+@@ -319,7 +433,6 @@ object PluginRegistry {
+               )
+             }
+ 
+-            // Initialize
+             plugin.initialize(instance, context, settings)
+             instance.addPlugin(
+               PluginInfo(
+@@ -333,12 +446,90 @@ object PluginRegistry {
+                 classLoader = classLoader
+               )
+             )
++
++            PluginCache.put(pluginId, installedJar.getAbsolutePath, pluginJar.getName)
+         }
+-      } catch {
+-        case e: Throwable =>
+-          logger.error(s"Error during plugin initialization: ${pluginJar.getName}", e)
+-          classLoader.close()
+       }
++    } catch {
++      case e: Throwable =>
++        logger.error(s"Error during plugin initialization: ${pluginJar.getName}", e)
++        classLoader.close()
++    }
++  }
++
++  def initialize(context: ServletContext, settings: SystemSettings, conn: java.sql.Connection): Unit = synchronized {
++    val pluginDir = new File(PluginHome)
++    val manager = new JDBCVersionManager(conn)
++
++    val installedDir = new File(PluginHome, ".installed")
++    if (installedDir.exists) {
++      FileUtils.deleteDirectory(installedDir)
++    }
++    installedDir.mkdirs()
++
++    logger.info("Scanning classpath for plugins via ServiceLoader")
++    val classpathPlugins = discoverPluginsViaServiceLoader(Thread.currentThread.getContextClassLoader)
++    classpathPlugins.foreach { plugin =>
++      val pluginId = plugin.pluginId
++      instance.getPlugins().find(_.pluginId == pluginId) match {
++        case Some(x) =>
++          logger.warn(s"Classpath plugin ${pluginId} is duplicated. ${x.pluginJar.getName} is available.")
++        case None =>
++          try {
++            val solidbase = new Solidbase()
++            solidbase
++              .migrate(
++                conn,
++                Thread.currentThread.getContextClassLoader,
++                DatabaseConfig.liquiDriver,
++                new Module(plugin.pluginId, plugin.versions*)
++              )
++            conn.commit()
++
++            val databaseVersion = manager.getCurrentVersion(plugin.pluginId)
++            val pluginVersion = plugin.versions.last.getVersion
++            if (databaseVersion != pluginVersion) {
++              throw new IllegalStateException(
++                s"Plugin version is ${pluginVersion}, but database version is ${databaseVersion}"
++              )
++            }
++
++            plugin.initialize(instance, context, settings)
++            instance.addPlugin(
++              PluginInfo(
++                pluginId = plugin.pluginId,
++                pluginName = plugin.pluginName,
++                pluginVersion = plugin.versions.last.getVersion,
++                gitbucketVersion = None,
++                description = plugin.description,
++                pluginClass = plugin,
++                pluginJar = new File("classpath"),
++                classLoader = Thread.currentThread.getContextClassLoader.asInstanceOf[URLClassLoader]
++              )
++            )
++            PluginCache.put(pluginId, "classpath", "classpath")
++            logger.info(s"Loaded classpath plugin: ${plugin.pluginId} v${plugin.versions.last.getVersion}")
++          } catch {
++            case e: Throwable =>
++              logger.error(s"Error during classpath plugin initialization: ${plugin.pluginId}", e)
++          }
++      }
++    }
++
++    val pluginJars = listPluginJars(pluginDir)
++
++    val extraJars = extraPluginDir
++      .map { extraDir =>
++        listPluginJars(new File(extraDir))
++      }
++      .getOrElse(Nil)
++
++    (extraJars ++ pluginJars).foreach { pluginJar =>
++      val installedJar = new File(installedDir, pluginJar.getName)
++
++      FileUtils.copyFile(pluginJar, installedJar)
++      logger.info(s"Initialize ${pluginJar.getName}")
++      loadPluginFromJar(installedJar, pluginJar, manager, conn, context, settings)
+     }
+ 
+     if (watcher == null) {
+@@ -373,6 +564,7 @@ object PluginRegistry {
+         plugin.classLoader.close()
+       }
+     }
++    PluginCache.clear()
+   }
+ 
+   def getPluginInfoFromClassLoader(classLoader: ClassLoader): Option[PluginInfo] = {
+@@ -446,8 +638,8 @@ class PluginWatchThread(context: ServletContext, dir: String) extends Thread wit
+           new Thread {
+             override def run(): Unit = {
+               gitbucket.core.servlet.Database() withTransaction { session =>
+-                logger.info("Reloading plugins...")
+-                PluginRegistry.reload(context, loadSystemSettings(), session.conn)
++                logger.info("Reloading changed plugins...")
++                PluginRegistry.reloadChangedPlugins(context, loadSystemSettings(), session.conn)
+                 logger.info("Reloading finished.")
+               }
+             }
+diff --git a/src/main/scala/gitbucket/core/servlet/InitializeListener.scala b/src/main/scala/gitbucket/core/servlet/InitializeListener.scala
+index fed84cf9..9f991c76 100644
+--- a/src/main/scala/gitbucket/core/servlet/InitializeListener.scala
++++ b/src/main/scala/gitbucket/core/servlet/InitializeListener.scala
+@@ -87,9 +87,9 @@ class InitializeListener extends ServletContextListener with SystemSettingsServi
+         // Install bundled plugins
+         extractBundledPlugins()
+ 
+-        // Load plugins
+-        logger.info("Initialize plugins")
+-        PluginRegistry.initialize(event.getServletContext, loadSystemSettings(), conn)
++        // Load plugins via PluginLifecycle
++        logger.info("Initialize plugins via PluginLifecycle")
++        GitBucketCoreModule.onInitialize(event.getServletContext, loadSystemSettings(), conn)
+       }
+ 
+       //    // Start Quartz scheduler
+@@ -176,8 +176,8 @@ class InitializeListener extends ServletContextListener with SystemSettingsServi
+   override def contextDestroyed(event: ServletContextEvent): Unit = {
+ //    // Shutdown Quartz scheduler
+ //    system.terminate()
+-    // Shutdown plugins
+-    PluginRegistry.shutdown(event.getServletContext, loadSystemSettings())
++    // Shutdown plugins via PluginLifecycle
++    GitBucketCoreModule.onShutdown(event.getServletContext, loadSystemSettings())
+     // Close datasource
+     Database.closeDataSource()
+   }

@@ -1,0 +1,78 @@
+diff --git a/src/main/scala/gitbucket/core/GitBucketCoreModule.scala b/src/main/scala/gitbucket/core/GitBucketCoreModule.scala
+index ff4b726d..fab62f38 100644
+--- a/src/main/scala/gitbucket/core/GitBucketCoreModule.scala
++++ b/src/main/scala/gitbucket/core/GitBucketCoreModule.scala
+@@ -124,7 +124,8 @@ object GitBucketCoreModule
+       new Version("4.44.0", new LiquibaseMigration("update/gitbucket-core_4.44.xml")),
+       new Version("4.45.0"),
+       new Version("4.46.0", new LiquibaseMigration("update/gitbucket-core_4.46.xml")),
+-      new Version("4.46.1")
++      new Version("4.46.1"),
++      new Version("4.47.0", new LiquibaseMigration("update/gitbucket-core_4.47.xml"))
+     ) {
+   java.util.logging.Logger.getLogger("liquibase").setLevel(Level.SEVERE)
+ }
+diff --git a/src/main/scala/gitbucket/core/model/Repository.scala b/src/main/scala/gitbucket/core/model/Repository.scala
+index 121f9be9..46b5f12f 100644
+--- a/src/main/scala/gitbucket/core/model/Repository.scala
++++ b/src/main/scala/gitbucket/core/model/Repository.scala
+@@ -25,6 +25,7 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
+     val mergeOptions = column[String]("MERGE_OPTIONS")
+     val defaultMergeOption = column[String]("DEFAULT_MERGE_OPTION")
+     val safeMode = column[Boolean]("SAFE_MODE")
++    val lastSyncTime = column[Option[java.util.Date]]("LAST_SYNC_TIME")
+ 
+     def * =
+       (
+@@ -40,7 +41,8 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
+           originUserName.?,
+           originRepositoryName.?,
+           parentUserName.?,
+-          parentRepositoryName.?
++          parentRepositoryName.?,
++          lastSyncTime
+         ),
+         (
+           issuesOption,
+@@ -67,7 +69,8 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
+             repository._10,
+             repository._11,
+             repository._12,
+-            RepositoryOptions.apply.tupled.apply(options)
++            RepositoryOptions.apply.tupled.apply(options),
++            repository._13
+           )
+         },
+         { (r: Repository) =>
+@@ -85,7 +88,8 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
+                 r.originUserName,
+                 r.originRepositoryName,
+                 r.parentUserName,
+-                r.parentRepositoryName
++                r.parentRepositoryName,
++                r.lastSyncTime
+               ),
+               (
+                 RepositoryOptions.unapply(r.options).get
+@@ -112,7 +116,8 @@ case class Repository(
+   originRepositoryName: Option[String],
+   parentUserName: Option[String],
+   parentRepositoryName: Option[String],
+-  options: RepositoryOptions
++  options: RepositoryOptions,
++  lastSyncTime: Option[java.util.Date] = None
+ )
+ 
+ case class RepositoryOptions(
+diff --git a/src/main/scala/gitbucket/core/service/RepositoryService.scala b/src/main/scala/gitbucket/core/service/RepositoryService.scala
+index e0df0a3b..5e30bdeb 100644
+--- a/src/main/scala/gitbucket/core/service/RepositoryService.scala
++++ b/src/main/scala/gitbucket/core/service/RepositoryService.scala
+@@ -54,6 +54,7 @@ trait RepositoryService {
+         originRepositoryName = originRepositoryName,
+         parentUserName = parentUserName,
+         parentRepositoryName = parentRepositoryName,
++        lastSyncTime = None,
+         options = RepositoryOptions(
+           issuesOption = "PUBLIC", // TODO DISABLE for the forked repository?
+           externalIssuesUrl = None,

@@ -25,6 +25,7 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
     val mergeOptions = column[String]("MERGE_OPTIONS")
     val defaultMergeOption = column[String]("DEFAULT_MERGE_OPTION")
     val safeMode = column[Boolean]("SAFE_MODE")
+    val lastSyncTime = column[Option[java.util.Date]]("LAST_SYNC_TIME")
 
     def * =
       (
@@ -40,7 +41,8 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
           originUserName.?,
           originRepositoryName.?,
           parentUserName.?,
-          parentRepositoryName.?
+          parentRepositoryName.?,
+          lastSyncTime
         ),
         (
           issuesOption,
@@ -67,7 +69,8 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
             repository._10,
             repository._11,
             repository._12,
-            RepositoryOptions.apply.tupled.apply(options)
+            RepositoryOptions.apply.tupled.apply(options),
+            repository._13
           )
         },
         { (r: Repository) =>
@@ -85,7 +88,8 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
                 r.originUserName,
                 r.originRepositoryName,
                 r.parentUserName,
-                r.parentRepositoryName
+                r.parentRepositoryName,
+                r.lastSyncTime
               ),
               (
                 RepositoryOptions.unapply(r.options).get
@@ -112,7 +116,8 @@ case class Repository(
   originRepositoryName: Option[String],
   parentUserName: Option[String],
   parentRepositoryName: Option[String],
-  options: RepositoryOptions
+  options: RepositoryOptions,
+  lastSyncTime: Option[java.util.Date] = None
 )
 
 case class RepositoryOptions(

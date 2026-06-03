@@ -54,6 +54,7 @@ trait RepositoryService {
         originRepositoryName = originRepositoryName,
         parentUserName = parentUserName,
         parentRepositoryName = parentRepositoryName,
+        lastSyncTime = None,
         options = RepositoryOptions(
           issuesOption = "PUBLIC", // TODO DISABLE for the forked repository?
           externalIssuesUrl = None,

@@ -294,6 +294,21 @@
   </label>
 </fieldset>
 <!--====================================================================-->
+<!-- Issue comments -->
+<!--====================================================================-->
+<hr>
+<label class="strong">Issue comments</label>
+<fieldset>
+  <label class="radio">
+    <input type="radio" name="basicBehavior.allowIssueComment" value="true"@if(context.settings.basicBehavior.allowIssueComment){ checked}>
+    <span class="strong">Allow</span> <span class="normal">- Allow users to comment on issues and pull requests.</span>
+  </label>
+  <label class="radio">
+    <input type="radio" name="basicBehavior.allowIssueComment" value="false"@if(!context.settings.basicBehavior.allowIssueComment){ checked}>
+    <span class="strong">Deny</span> <span class="normal">- Deny users from commenting on issues and pull requests.</span>
+  </label>
+</fieldset>
+<!--====================================================================-->
 <!-- File upload -->
 <!--====================================================================-->
 <hr>

@@ -1,0 +1,202 @@
+diff --git a/src/main/scala/gitbucket/core/controller/IssuesController.scala b/src/main/scala/gitbucket/core/controller/IssuesController.scala
+index 788227fc..7ddd3622 100644
+--- a/src/main/scala/gitbucket/core/controller/IssuesController.scala
++++ b/src/main/scala/gitbucket/core/controller/IssuesController.scala
+@@ -210,55 +210,71 @@ trait IssuesControllerBase extends ControllerBase {
+   })
+ 
+   post("/:owner/:repository/issue_comments/new", commentForm)(readableUsersOnly { (form, repository) =>
+-    context.withLoginAccount { loginAccount =>
+-      getIssue(repository.owner, repository.name, form.issueId.toString).flatMap { issue =>
+-        val actionOpt =
+-          params
+-            .get("action")
+-            .filter(_ => isEditableContent(issue.userName, issue.repositoryName, issue.openedUserName, loginAccount))
+-        handleComment(issue, Some(form.content), repository, actionOpt) map { case (issue, id) =>
+-          redirect(
+-            s"/${repository.owner}/${repository.name}/${if (issue.isPullRequest) "pull" else "issues"}/${form.issueId}#comment-$id"
+-          )
+-        }
+-      } getOrElse NotFound()
++    if (!context.settings.basicBehavior.allowIssueComment) {
++      Unauthorized()
++    } else {
++      context.withLoginAccount { loginAccount =>
++        getIssue(repository.owner, repository.name, form.issueId.toString).flatMap { issue =>
++          val actionOpt =
++            params
++              .get("action")
++              .filter(_ => isEditableContent(issue.userName, issue.repositoryName, issue.openedUserName, loginAccount))
++          handleComment(issue, Some(form.content), repository, actionOpt) map { case (issue, id) =>
++            redirect(
++              s"/${repository.owner}/${repository.name}/${if (issue.isPullRequest) "pull" else "issues"}/${form.issueId}#comment-$id"
++            )
++          }
++        } getOrElse NotFound()
++      }
+     }
+   })
+ 
+   post("/:owner/:repository/issue_comments/state", issueStateForm)(readableUsersOnly { (form, repository) =>
+-    context.withLoginAccount { loginAccount =>
+-      getIssue(repository.owner, repository.name, form.issueId.toString).flatMap { issue =>
+-        val actionOpt =
+-          params
+-            .get("action")
+-            .filter(_ => isEditableContent(issue.userName, issue.repositoryName, issue.openedUserName, loginAccount))
+-        handleComment(issue, form.content, repository, actionOpt) map { case (issue, id) =>
+-          redirect(
+-            s"/${repository.owner}/${repository.name}/${if (issue.isPullRequest) "pull" else "issues"}/${form.issueId}#comment-$id"
+-          )
+-        }
+-      } getOrElse NotFound()
++    if (!context.settings.basicBehavior.allowIssueComment) {
++      Unauthorized()
++    } else {
++      context.withLoginAccount { loginAccount =>
++        getIssue(repository.owner, repository.name, form.issueId.toString).flatMap { issue =>
++          val actionOpt =
++            params
++              .get("action")
++              .filter(_ => isEditableContent(issue.userName, issue.repositoryName, issue.openedUserName, loginAccount))
++          handleComment(issue, form.content, repository, actionOpt) map { case (issue, id) =>
++            redirect(
++              s"/${repository.owner}/${repository.name}/${if (issue.isPullRequest) "pull" else "issues"}/${form.issueId}#comment-$id"
++            )
++          }
++        } getOrElse NotFound()
++      }
+     }
+   })
+ 
+   ajaxPost("/:owner/:repository/issue_comments/edit/:id", commentForm)(readableUsersOnly { (form, repository) =>
+-    context.withLoginAccount { loginAccount =>
+-      getComment(repository.owner, repository.name, params("id")).map { comment =>
+-        if (isEditableContent(repository.owner, repository.name, comment.commentedUserName, loginAccount)) {
+-          updateComment(repository.owner, repository.name, comment.issueId, comment.commentId, form.content)
+-          redirect(s"/${repository.owner}/${repository.name}/issue_comments/_data/${comment.commentId}")
+-        } else Unauthorized()
+-      } getOrElse NotFound()
++    if (!context.settings.basicBehavior.allowIssueComment) {
++      Unauthorized()
++    } else {
++      context.withLoginAccount { loginAccount =>
++        getComment(repository.owner, repository.name, params("id")).map { comment =>
++          if (isEditableContent(repository.owner, repository.name, comment.commentedUserName, loginAccount)) {
++            updateComment(repository.owner, repository.name, comment.issueId, comment.commentId, form.content)
++            redirect(s"/${repository.owner}/${repository.name}/issue_comments/_data/${comment.commentId}")
++          } else Unauthorized()
++        } getOrElse NotFound()
++      }
+     }
+   })
+ 
+   ajaxPost("/:owner/:repository/issue_comments/delete/:id")(readableUsersOnly { repository =>
+-    context.withLoginAccount { loginAccount =>
+-      getComment(repository.owner, repository.name, params("id")).map { comment =>
+-        if (isDeletableComment(repository.owner, repository.name, comment.commentedUserName, loginAccount)) {
+-          Ok(deleteComment(repository.owner, repository.name, comment.issueId, comment.commentId))
+-        } else Unauthorized()
+-      } getOrElse NotFound()
++    if (!context.settings.basicBehavior.allowIssueComment) {
++      Unauthorized()
++    } else {
++      context.withLoginAccount { loginAccount =>
++        getComment(repository.owner, repository.name, params("id")).map { comment =>
++          if (isDeletableComment(repository.owner, repository.name, comment.commentedUserName, loginAccount)) {
++            Ok(deleteComment(repository.owner, repository.name, comment.issueId, comment.commentId))
++          } else Unauthorized()
++        } getOrElse NotFound()
++      }
+     }
+   })
+ 
+diff --git a/src/main/scala/gitbucket/core/controller/SystemSettingsController.scala b/src/main/scala/gitbucket/core/controller/SystemSettingsController.scala
+index b5f6d531..e0cc8fd8 100644
+--- a/src/main/scala/gitbucket/core/controller/SystemSettingsController.scala
++++ b/src/main/scala/gitbucket/core/controller/SystemSettingsController.scala
+@@ -51,6 +51,7 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
+       "notification" -> trim(label("Notification", boolean())),
+       "limitVisibleRepositories" -> trim(label("limitVisibleRepositories", boolean())),
+       "compareNoCheckByDefault" -> trim(label("Default compare mode", boolean())),
++      "allowIssueComment" -> trim(label("Issue comments", boolean())),
+     )(BasicBehavior.apply),
+     "ssh" -> mapping(
+       "enabled" -> trim(label("SSH access", boolean())),
+diff --git a/src/main/scala/gitbucket/core/service/SystemSettingsService.scala b/src/main/scala/gitbucket/core/service/SystemSettingsService.scala
+index 6ec6c8c2..1cc4ce0f 100644
+--- a/src/main/scala/gitbucket/core/service/SystemSettingsService.scala
++++ b/src/main/scala/gitbucket/core/service/SystemSettingsService.scala
+@@ -32,6 +32,7 @@ trait SystemSettingsService {
+     props.setProperty(Notification, settings.basicBehavior.notification.toString)
+     props.setProperty(LimitVisibleRepositories, settings.basicBehavior.limitVisibleRepositories.toString)
+     props.setProperty(CompareNoCheckByDefault, settings.basicBehavior.compareNoCheckByDefault.toString)
++    props.setProperty(AllowIssueComment, settings.basicBehavior.allowIssueComment.toString)
+     props.setProperty(SshEnabled, settings.ssh.enabled.toString)
+     settings.ssh.bindAddress.foreach { bindAddress =>
+       props.setProperty(SshBindAddressHost, bindAddress.host.trim())
+@@ -132,7 +133,8 @@ trait SystemSettingsService {
+         getValue(props, Gravatar, false),
+         getValue(props, Notification, false),
+         getValue(props, LimitVisibleRepositories, false),
+-        getValue(props, CompareNoCheckByDefault, false)
++        getValue(props, CompareNoCheckByDefault, false),
++        getValue(props, AllowIssueComment, true)
+       ),
+       Ssh(
+         enabled = getValue(props, SshEnabled, false),
+@@ -287,6 +289,7 @@ object SystemSettingsService {
+     notification: Boolean,
+     limitVisibleRepositories: Boolean,
+     compareNoCheckByDefault: Boolean,
++    allowIssueComment: Boolean,
+   )
+ 
+   case class RepositoryOperation(
+@@ -469,6 +472,7 @@ object SystemSettingsService {
+   private val RepositoryViewerMaxDiffLines = "repository_viewer_max_diff_lines"
+   private val DefaultBranch = "default_branch"
+   private val ShowFullName = "show_full_name"
++  private val AllowIssueComment = "allow_issue_comment"
+ 
+   private def getValue[A: ClassTag](props: java.util.Properties, key: String, default: A): A = {
+     getConfigValue(key).getOrElse {
+diff --git a/src/main/twirl/gitbucket/core/admin/settings_system.scala.html b/src/main/twirl/gitbucket/core/admin/settings_system.scala.html
+index 6826f511..165a10b6 100644
+--- a/src/main/twirl/gitbucket/core/admin/settings_system.scala.html
++++ b/src/main/twirl/gitbucket/core/admin/settings_system.scala.html
+@@ -294,6 +294,21 @@
+   </label>
+ </fieldset>
+ <!--====================================================================-->
++<!-- Issue comments -->
++<!--====================================================================-->
++<hr>
++<label class="strong">Issue comments</label>
++<fieldset>
++  <label class="radio">
++    <input type="radio" name="basicBehavior.allowIssueComment" value="true"@if(context.settings.basicBehavior.allowIssueComment){ checked}>
++    <span class="strong">Allow</span> <span class="normal">- Allow users to comment on issues and pull requests.</span>
++  </label>
++  <label class="radio">
++    <input type="radio" name="basicBehavior.allowIssueComment" value="false"@if(!context.settings.basicBehavior.allowIssueComment){ checked}>
++    <span class="strong">Deny</span> <span class="normal">- Deny users from commenting on issues and pull requests.</span>
++  </label>
++</fieldset>
++<!--====================================================================-->
+ <!-- File upload -->
+ <!--====================================================================-->
+ <hr>
+diff --git a/src/main/twirl/gitbucket/core/issues/commentform.scala.html b/src/main/twirl/gitbucket/core/issues/commentform.scala.html
+index 2b2111f5..2da1a9c8 100644
+--- a/src/main/twirl/gitbucket/core/issues/commentform.scala.html
++++ b/src/main/twirl/gitbucket/core/issues/commentform.scala.html
+@@ -4,7 +4,7 @@
+   isManageable: Boolean,
+   repository: gitbucket.core.service.RepositoryService.RepositoryInfo)(implicit context: gitbucket.core.controller.Context)
+ @import gitbucket.core.view.helpers
+-@if(isEditable){
++@if(isEditable && context.settings.basicBehavior.allowIssueComment){
+   <form method="POST" validate="true" autocomplete="off">
+     <div class="panel panel-default issue-comment-box">
+       <div class="panel-body">

@@ -32,6 +32,7 @@ trait SystemSettingsService {
     props.setProperty(Notification, settings.basicBehavior.notification.toString)
     props.setProperty(LimitVisibleRepositories, settings.basicBehavior.limitVisibleRepositories.toString)
     props.setProperty(CompareNoCheckByDefault, settings.basicBehavior.compareNoCheckByDefault.toString)
+    props.setProperty(AllowIssueComment, settings.basicBehavior.allowIssueComment.toString)
     props.setProperty(SshEnabled, settings.ssh.enabled.toString)
     settings.ssh.bindAddress.foreach { bindAddress =>
       props.setProperty(SshBindAddressHost, bindAddress.host.trim())
@@ -132,7 +133,8 @@ trait SystemSettingsService {
         getValue(props, Gravatar, false),
         getValue(props, Notification, false),
         getValue(props, LimitVisibleRepositories, false),
-        getValue(props, CompareNoCheckByDefault, false)
+        getValue(props, CompareNoCheckByDefault, false),
+        getValue(props, AllowIssueComment, true)
       ),
       Ssh(
         enabled = getValue(props, SshEnabled, false),
@@ -287,6 +289,7 @@ object SystemSettingsService {
     notification: Boolean,
     limitVisibleRepositories: Boolean,
     compareNoCheckByDefault: Boolean,
+    allowIssueComment: Boolean,
   )
 
   case class RepositoryOperation(
@@ -469,6 +472,7 @@ object SystemSettingsService {
   private val RepositoryViewerMaxDiffLines = "repository_viewer_max_diff_lines"
   private val DefaultBranch = "default_branch"
   private val ShowFullName = "show_full_name"
+  private val AllowIssueComment = "allow_issue_comment"
 
   private def getValue[A: ClassTag](props: java.util.Properties, key: String, default: A): A = {
     getConfigValue(key).getOrElse {

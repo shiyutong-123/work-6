@@ -210,55 +210,71 @@ trait IssuesControllerBase extends ControllerBase {
   })
 
   post("/:owner/:repository/issue_comments/new", commentForm)(readableUsersOnly { (form, repository) =>
-    context.withLoginAccount { loginAccount =>
-      getIssue(repository.owner, repository.name, form.issueId.toString).flatMap { issue =>
-        val actionOpt =
-          params
-            .get("action")
-            .filter(_ => isEditableContent(issue.userName, issue.repositoryName, issue.openedUserName, loginAccount))
-        handleComment(issue, Some(form.content), repository, actionOpt) map { case (issue, id) =>
-          redirect(
-            s"/${repository.owner}/${repository.name}/${if (issue.isPullRequest) "pull" else "issues"}/${form.issueId}#comment-$id"
-          )
-        }
-      } getOrElse NotFound()
+    if (!context.settings.basicBehavior.allowIssueComment) {
+      Unauthorized()
+    } else {
+      context.withLoginAccount { loginAccount =>
+        getIssue(repository.owner, repository.name, form.issueId.toString).flatMap { issue =>
+          val actionOpt =
+            params
+              .get("action")
+              .filter(_ => isEditableContent(issue.userName, issue.repositoryName, issue.openedUserName, loginAccount))
+          handleComment(issue, Some(form.content), repository, actionOpt) map { case (issue, id) =>
+            redirect(
+              s"/${repository.owner}/${repository.name}/${if (issue.isPullRequest) "pull" else "issues"}/${form.issueId}#comment-$id"
+            )
+          }
+        } getOrElse NotFound()
+      }
     }
   })
 
   post("/:owner/:repository/issue_comments/state", issueStateForm)(readableUsersOnly { (form, repository) =>
-    context.withLoginAccount { loginAccount =>
-      getIssue(repository.owner, repository.name, form.issueId.toString).flatMap { issue =>
-        val actionOpt =
-          params
-            .get("action")
-            .filter(_ => isEditableContent(issue.userName, issue.repositoryName, issue.openedUserName, loginAccount))
-        handleComment(issue, form.content, repository, actionOpt) map { case (issue, id) =>
-          redirect(
-            s"/${repository.owner}/${repository.name}/${if (issue.isPullRequest) "pull" else "issues"}/${form.issueId}#comment-$id"
-          )
-        }
-      } getOrElse NotFound()
+    if (!context.settings.basicBehavior.allowIssueComment) {
+      Unauthorized()
+    } else {
+      context.withLoginAccount { loginAccount =>
+        getIssue(repository.owner, repository.name, form.issueId.toString).flatMap { issue =>
+          val actionOpt =
+            params
+              .get("action")
+              .filter(_ => isEditableContent(issue.userName, issue.repositoryName, issue.openedUserName, loginAccount))
+          handleComment(issue, form.content, repository, actionOpt) map { case (issue, id) =>
+            redirect(
+              s"/${repository.owner}/${repository.name}/${if (issue.isPullRequest) "pull" else "issues"}/${form.issueId}#comment-$id"
+            )
+          }
+        } getOrElse NotFound()
+      }
     }
   })
 
   ajaxPost("/:owner/:repository/issue_comments/edit/:id", commentForm)(readableUsersOnly { (form, repository) =>
-    context.withLoginAccount { loginAccount =>
-      getComment(repository.owner, repository.name, params("id")).map { comment =>
-        if (isEditableContent(repository.owner, repository.name, comment.commentedUserName, loginAccount)) {
-          updateComment(repository.owner, repository.name, comment.issueId, comment.commentId, form.content)
-          redirect(s"/${repository.owner}/${repository.name}/issue_comments/_data/${comment.commentId}")
-        } else Unauthorized()
-      } getOrElse NotFound()
+    if (!context.settings.basicBehavior.allowIssueComment) {
+      Unauthorized()
+    } else {
+      context.withLoginAccount { loginAccount =>
+        getComment(repository.owner, repository.name, params("id")).map { comment =>
+          if (isEditableContent(repository.owner, repository.name, comment.commentedUserName, loginAccount)) {
+            updateComment(repository.owner, repository.name, comment.issueId, comment.commentId, form.content)
+            redirect(s"/${repository.owner}/${repository.name}/issue_comments/_data/${comment.commentId}")
+          } else Unauthorized()
+        } getOrElse NotFound()
+      }
     }
   })
 
   ajaxPost("/:owner/:repository/issue_comments/delete/:id")(readableUsersOnly { repository =>
-    context.withLoginAccount { loginAccount =>
-      getComment(repository.owner, repository.name, params("id")).map { comment =>
-        if (isDeletableComment(repository.owner, repository.name, comment.commentedUserName, loginAccount)) {
-          Ok(deleteComment(repository.owner, repository.name, comment.issueId, comment.commentId))
-        } else Unauthorized()
-      } getOrElse NotFound()
+    if (!context.settings.basicBehavior.allowIssueComment) {
+      Unauthorized()
+    } else {
+      context.withLoginAccount { loginAccount =>
+        getComment(repository.owner, repository.name, params("id")).map { comment =>
+          if (isDeletableComment(repository.owner, repository.name, comment.commentedUserName, loginAccount)) {
+            Ok(deleteComment(repository.owner, repository.name, comment.issueId, comment.commentId))
+          } else Unauthorized()
+        } getOrElse NotFound()
+      }
     }
   })
 

@@ -4,7 +4,7 @@
   isManageable: Boolean,
   repository: gitbucket.core.service.RepositoryService.RepositoryInfo)(implicit context: gitbucket.core.controller.Context)
 @import gitbucket.core.view.helpers
-@if(isEditable){
+@if(isEditable && context.settings.basicBehavior.allowIssueComment){
   <form method="POST" validate="true" autocomplete="off">
     <div class="panel panel-default issue-comment-box">
       <div class="panel-body">

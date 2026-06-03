@@ -81,6 +81,19 @@ class SystemSettingsServiceSpec extends AnyWordSpecLike with Matchers {
       val settings = loadSystemSettings(props)
       settings.basicBehavior.compareNoCheckByDefault shouldBe true
     }
+    "default enable_auth_lock to false if not specified" in new SystemSettingsService {
+      val props = new Properties()
+
+      val settings = loadSystemSettings(props)
+      settings.basicBehavior.enableAuthLock shouldBe false
+    }
+    "read enable_auth_lock configuration when true" in new SystemSettingsService {
+      val props = new Properties()
+      props.setProperty("enable_auth_lock", "true")
+
+      val settings = loadSystemSettings(props)
+      settings.basicBehavior.enableAuthLock shouldBe true
+    }
   }
 
   "SshAddress" can {

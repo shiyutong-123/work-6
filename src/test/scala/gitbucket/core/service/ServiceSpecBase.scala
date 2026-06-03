@@ -57,6 +57,7 @@ trait ServiceSpecBase {
         notification = false,
         limitVisibleRepositories = false,
         compareNoCheckByDefault = false,
+        enableAuthLock = false
       ),
       ssh = Ssh(
         enabled = false,

@@ -6,6 +6,9 @@ import gitbucket.core.model.Role
 import RepositoryService.RepositoryInfo
 import Implicits._
 
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.locks.ReentrantLock
+
 /**
  * Allows only oneself and administrators.
  */
@@ -108,9 +111,31 @@ trait ReadableUsersAuthenticator { self: ControllerBase & RepositoryService & Ac
     authenticate(action(form, _))
   }
 
+  private val authLocks = new ConcurrentHashMap[String, ReentrantLock]()
+
+  private def getAuthLock(key: String): ReentrantLock = {
+    authLocks.computeIfAbsent(key, _ => new ReentrantLock())
+  }
+
   private def authenticate(action: RepositoryInfo => Any) = {
     val userName = params("owner")
     val repoName = params("repository")
+    val lockKey = s"$userName/$repoName"
+
+    if (context.settings.basicBehavior.enableAuthLock) {
+      val lock = getAuthLock(lockKey)
+      lock.lock()
+      try {
+        performAuthCheck(userName, repoName, action)
+      } finally {
+        lock.unlock()
+      }
+    } else {
+      performAuthCheck(userName, repoName, action)
+    }
+  }
+
+  private def performAuthCheck(userName: String, repoName: String, action: RepositoryInfo => Any) = {
     getRepository(userName, repoName).map { repository =>
       if (isReadable(repository.repository, context.loginAccount) || !repository.repository.isPrivate) {
         action(repository)

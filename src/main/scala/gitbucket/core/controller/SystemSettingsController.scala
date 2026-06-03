@@ -51,6 +51,7 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
       "notification" -> trim(label("Notification", boolean())),
       "limitVisibleRepositories" -> trim(label("limitVisibleRepositories", boolean())),
       "compareNoCheckByDefault" -> trim(label("Default compare mode", boolean())),
+      "enableAuthLock" -> trim(label("Enable authentication lock", boolean())),
     )(BasicBehavior.apply),
     "ssh" -> mapping(
       "enabled" -> trim(label("SSH access", boolean())),

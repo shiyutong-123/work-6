@@ -1,0 +1,180 @@
+diff --git a/contrib/gitbucket.conf b/contrib/gitbucket.conf
+index b500d390..e3385557 100644
+--- a/contrib/gitbucket.conf
++++ b/contrib/gitbucket.conf
+@@ -35,6 +35,17 @@ GITBUCKET_PORT=8080
+ # URL prefix for the GitBucket page (http://<host>:<port>/<prefix>/)
+ GITBUCKET_PREFIX=
+ 
++# Authentication lock for high concurrency (optional)
++# Set to 'true' to enable per-repository locking during authentication checks.
++# This prevents race conditions when multiple concurrent requests access the same repository,
++# which can cause intermittent 403 errors under high load.
++# You can enable this via environment variable or Java system property:
++#   Environment variable: GITBUCKET_ENABLE_AUTH_LOCK=true
++#   Java system property: -Dgitbucket.enable_auth_lock=true
++# Or add to gitbucket.conf home directory's gitbucket.properties file:
++#   enable_auth_lock=true
++# Default: false
++
+ # Directory where GitBucket is installed
+ # Configuration is stored here:
+ GITBUCKET_DIR=/usr/share/gitbucket
+diff --git a/src/main/scala/gitbucket/core/controller/SystemSettingsController.scala b/src/main/scala/gitbucket/core/controller/SystemSettingsController.scala
+index b5f6d531..f2c25d62 100644
+--- a/src/main/scala/gitbucket/core/controller/SystemSettingsController.scala
++++ b/src/main/scala/gitbucket/core/controller/SystemSettingsController.scala
+@@ -51,6 +51,7 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
+       "notification" -> trim(label("Notification", boolean())),
+       "limitVisibleRepositories" -> trim(label("limitVisibleRepositories", boolean())),
+       "compareNoCheckByDefault" -> trim(label("Default compare mode", boolean())),
++      "enableAuthLock" -> trim(label("Enable authentication lock", boolean())),
+     )(BasicBehavior.apply),
+     "ssh" -> mapping(
+       "enabled" -> trim(label("SSH access", boolean())),
+diff --git a/src/main/scala/gitbucket/core/service/SystemSettingsService.scala b/src/main/scala/gitbucket/core/service/SystemSettingsService.scala
+index 6ec6c8c2..237f8671 100644
+--- a/src/main/scala/gitbucket/core/service/SystemSettingsService.scala
++++ b/src/main/scala/gitbucket/core/service/SystemSettingsService.scala
+@@ -32,6 +32,7 @@ trait SystemSettingsService {
+     props.setProperty(Notification, settings.basicBehavior.notification.toString)
+     props.setProperty(LimitVisibleRepositories, settings.basicBehavior.limitVisibleRepositories.toString)
+     props.setProperty(CompareNoCheckByDefault, settings.basicBehavior.compareNoCheckByDefault.toString)
++    props.setProperty(EnableAuthLock, settings.basicBehavior.enableAuthLock.toString)
+     props.setProperty(SshEnabled, settings.ssh.enabled.toString)
+     settings.ssh.bindAddress.foreach { bindAddress =>
+       props.setProperty(SshBindAddressHost, bindAddress.host.trim())
+@@ -132,7 +133,8 @@ trait SystemSettingsService {
+         getValue(props, Gravatar, false),
+         getValue(props, Notification, false),
+         getValue(props, LimitVisibleRepositories, false),
+-        getValue(props, CompareNoCheckByDefault, false)
++        getValue(props, CompareNoCheckByDefault, false),
++        getValue(props, EnableAuthLock, false)
+       ),
+       Ssh(
+         enabled = getValue(props, SshEnabled, false),
+@@ -287,6 +289,7 @@ object SystemSettingsService {
+     notification: Boolean,
+     limitVisibleRepositories: Boolean,
+     compareNoCheckByDefault: Boolean,
++    enableAuthLock: Boolean
+   )
+ 
+   case class RepositoryOperation(
+@@ -421,6 +424,7 @@ object SystemSettingsService {
+   private val Notification = "notification"
+   private val LimitVisibleRepositories = "limitVisibleRepositories"
+   private val CompareNoCheckByDefault = "compare_no_check_by_default"
++  private val EnableAuthLock = "enable_auth_lock"
+   private val SshEnabled = "ssh"
+   private val SshHost = "ssh.host"
+   private val SshPort = "ssh.port"
+diff --git a/src/main/scala/gitbucket/core/util/Authenticator.scala b/src/main/scala/gitbucket/core/util/Authenticator.scala
+index ba838d27..3ff80deb 100644
+--- a/src/main/scala/gitbucket/core/util/Authenticator.scala
++++ b/src/main/scala/gitbucket/core/util/Authenticator.scala
+@@ -6,6 +6,9 @@ import gitbucket.core.model.Role
+ import RepositoryService.RepositoryInfo
+ import Implicits._
+ 
++import java.util.concurrent.ConcurrentHashMap
++import java.util.concurrent.locks.ReentrantLock
++
+ /**
+  * Allows only oneself and administrators.
+  */
+@@ -108,9 +111,31 @@ trait ReadableUsersAuthenticator { self: ControllerBase & RepositoryService & Ac
+     authenticate(action(form, _))
+   }
+ 
++  private val authLocks = new ConcurrentHashMap[String, ReentrantLock]()
++
++  private def getAuthLock(key: String): ReentrantLock = {
++    authLocks.computeIfAbsent(key, _ => new ReentrantLock())
++  }
++
+   private def authenticate(action: RepositoryInfo => Any) = {
+     val userName = params("owner")
+     val repoName = params("repository")
++    val lockKey = s"$userName/$repoName"
++
++    if (context.settings.basicBehavior.enableAuthLock) {
++      val lock = getAuthLock(lockKey)
++      lock.lock()
++      try {
++        performAuthCheck(userName, repoName, action)
++      } finally {
++        lock.unlock()
++      }
++    } else {
++      performAuthCheck(userName, repoName, action)
++    }
++  }
++
++  private def performAuthCheck(userName: String, repoName: String, action: RepositoryInfo => Any) = {
+     getRepository(userName, repoName).map { repository =>
+       if (isReadable(repository.repository, context.loginAccount) || !repository.repository.isPrivate) {
+         action(repository)
+diff --git a/src/main/twirl/gitbucket/core/admin/settings_system.scala.html b/src/main/twirl/gitbucket/core/admin/settings_system.scala.html
+index 6826f511..3e2514ad 100644
+--- a/src/main/twirl/gitbucket/core/admin/settings_system.scala.html
++++ b/src/main/twirl/gitbucket/core/admin/settings_system.scala.html
+@@ -234,6 +234,21 @@
+   </label>
+ </fieldset>
+ <!--====================================================================-->
++<!-- Authentication lock -->
++<!--====================================================================-->
++<hr>
++<label class="strong">Authentication lock for high concurrency</label>
++<fieldset>
++  <label class="radio">
++    <input type="radio" name="basicBehavior.enableAuthLock" value="true"@if(context.settings.basicBehavior.enableAuthLock){ checked}>
++    <span class="strong">Enable</span> <span class="normal">- Use per-repository lock to prevent race conditions in authentication checks (recommended for high concurrency environments).</span>
++  </label>
++  <label class="radio">
++    <input type="radio" name="basicBehavior.enableAuthLock" value="false"@if(!context.settings.basicBehavior.enableAuthLock){ checked}>
++    <span class="strong">Disable</span> <span class="normal">- No locking on authentication checks (default behavior).</span>
++  </label>
++</fieldset>
++<!--====================================================================-->
+ <!-- Anonymous access -->
+ <!--====================================================================-->
+ <hr>
+diff --git a/src/test/scala/gitbucket/core/service/ServiceSpecBase.scala b/src/test/scala/gitbucket/core/service/ServiceSpecBase.scala
+index a64e9adc..6cb1ce06 100644
+--- a/src/test/scala/gitbucket/core/service/ServiceSpecBase.scala
++++ b/src/test/scala/gitbucket/core/service/ServiceSpecBase.scala
+@@ -57,6 +57,7 @@ trait ServiceSpecBase {
+         notification = false,
+         limitVisibleRepositories = false,
+         compareNoCheckByDefault = false,
++        enableAuthLock = false
+       ),
+       ssh = Ssh(
+         enabled = false,
+diff --git a/src/test/scala/gitbucket/core/service/SystemSettingsServiceSpec.scala b/src/test/scala/gitbucket/core/service/SystemSettingsServiceSpec.scala
+index bcc5bcce..43348d35 100644
+--- a/src/test/scala/gitbucket/core/service/SystemSettingsServiceSpec.scala
++++ b/src/test/scala/gitbucket/core/service/SystemSettingsServiceSpec.scala
+@@ -81,6 +81,19 @@ class SystemSettingsServiceSpec extends AnyWordSpecLike with Matchers {
+       val settings = loadSystemSettings(props)
+       settings.basicBehavior.compareNoCheckByDefault shouldBe true
+     }
++    "default enable_auth_lock to false if not specified" in new SystemSettingsService {
++      val props = new Properties()
++
++      val settings = loadSystemSettings(props)
++      settings.basicBehavior.enableAuthLock shouldBe false
++    }
++    "read enable_auth_lock configuration when true" in new SystemSettingsService {
++      val props = new Properties()
++      props.setProperty("enable_auth_lock", "true")
++
++      val settings = loadSystemSettings(props)
++      settings.basicBehavior.enableAuthLock shouldBe true
++    }
+   }
+ 
+   "SshAddress" can {

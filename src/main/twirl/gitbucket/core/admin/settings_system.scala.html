@@ -234,6 +234,21 @@
   </label>
 </fieldset>
 <!--====================================================================-->
+<!-- Authentication lock -->
+<!--====================================================================-->
+<hr>
+<label class="strong">Authentication lock for high concurrency</label>
+<fieldset>
+  <label class="radio">
+    <input type="radio" name="basicBehavior.enableAuthLock" value="true"@if(context.settings.basicBehavior.enableAuthLock){ checked}>
+    <span class="strong">Enable</span> <span class="normal">- Use per-repository lock to prevent race conditions in authentication checks (recommended for high concurrency environments).</span>
+  </label>
+  <label class="radio">
+    <input type="radio" name="basicBehavior.enableAuthLock" value="false"@if(!context.settings.basicBehavior.enableAuthLock){ checked}>
+    <span class="strong">Disable</span> <span class="normal">- No locking on authentication checks (default behavior).</span>
+  </label>
+</fieldset>
+<!--====================================================================-->
 <!-- Anonymous access -->
 <!--====================================================================-->
 <hr>

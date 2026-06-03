@@ -1,0 +1,213 @@
+diff --git a/build.sbt b/build.sbt
+index 867377eb..18890951 100644
+--- a/build.sbt
++++ b/build.sbt
+@@ -104,6 +104,7 @@ packageOptions += Package.MainClass("JettyLauncher")
+ // Assembly settings
+ assembly / test := {}
+ assembly / assemblyMergeStrategy := {
++  case PathList("META-INF", "services", xs @ _*) => MergeStrategy.concat
+   case PathList("META-INF", xs @ _*) =>
+     xs.map(_.toLowerCase) match {
+       case ("manifest.mf" :: Nil) => MergeStrategy.discard
+diff --git a/src/main/scala/gitbucket/core/plugin/PluginRegistry.scala b/src/main/scala/gitbucket/core/plugin/PluginRegistry.scala
+index a46c338a..f2dafff0 100644
+--- a/src/main/scala/gitbucket/core/plugin/PluginRegistry.scala
++++ b/src/main/scala/gitbucket/core/plugin/PluginRegistry.scala
+@@ -196,6 +196,13 @@ object PluginRegistry {
+   private var watcher: PluginWatchThread = null
+   private var extraWatcher: PluginWatchThread = null
+ 
++  // Cache ServiceLoaders for URLClassLoaders and classpath
++  private val serviceLoaderCache = new java.util.concurrent.ConcurrentHashMap[ClassLoader, java.util.ServiceLoader[Plugin]]()
++
++  private def getServiceLoader(classLoader: ClassLoader): java.util.ServiceLoader[Plugin] = {
++    serviceLoaderCache.computeIfAbsent(classLoader, cl => java.util.ServiceLoader.load(classOf[Plugin], cl))
++  }
++
+   /**
+    * Returns the PluginRegistry singleton instance.
+    */
+@@ -206,6 +213,8 @@ object PluginRegistry {
+    */
+   def reload(context: ServletContext, settings: SystemSettings, conn: java.sql.Connection): Unit = synchronized {
+     shutdown(context, settings)
++    serviceLoaderCache.values().forEach((sl: java.util.ServiceLoader[Plugin]) => sl.reload())
++    serviceLoaderCache.clear()
+     instance = new PluginRegistry()
+     initialize(context, settings, conn)
+   }
+@@ -216,6 +225,8 @@ object PluginRegistry {
+   def uninstall(pluginId: String, context: ServletContext, settings: SystemSettings, conn: java.sql.Connection): Unit =
+     synchronized {
+       shutdown(context, settings)
++      serviceLoaderCache.values().forEach((sl: java.util.ServiceLoader[Plugin]) => sl.reload())
++      serviceLoaderCache.clear()
+ 
+       new File(PluginHome)
+         .listFiles((_: File, name: String) => {
+@@ -282,6 +293,42 @@ object PluginRegistry {
+       }
+       .getOrElse(Nil)
+ 
++    // Load plugins from classpath using ServiceLoader
++    try {
++      val classpathLoader = getServiceLoader(Thread.currentThread.getContextClassLoader)
++      classpathLoader.iterator().asScala.foreach { plugin =>
++        val pluginId = plugin.pluginId
++        if (instance.getPlugins().find(_.pluginId == pluginId).isEmpty) {
++          logger.info(s"Initialize classpath plugin ${pluginId}")
++          
++          val solidbase = new Solidbase()
++          solidbase.migrate(
++            conn,
++            Thread.currentThread.getContextClassLoader,
++            DatabaseConfig.liquiDriver,
++            new Module(plugin.pluginId, plugin.versions*)
++          )
++          conn.commit()
++
++          plugin.initialize(instance, context, settings)
++          instance.addPlugin(
++            PluginInfo(
++              pluginId = plugin.pluginId,
++              pluginName = plugin.pluginName,
++              pluginVersion = plugin.versions.last.getVersion,
++              gitbucketVersion = None,
++              description = plugin.description,
++              pluginClass = plugin,
++              pluginJar = new File(""), // Dummy file for classpath plugins
++              classLoader = Thread.currentThread.getContextClassLoader
++            )
++          )
++        }
++      }
++    } catch {
++      case e: Throwable => logger.error("Error loading plugins from classpath", e)
++    }
++
+     (extraJars ++ pluginJars).foreach { pluginJar =>
+       val installedJar = new File(installedDir, pluginJar.getName)
+ 
+@@ -290,49 +337,60 @@ object PluginRegistry {
+       val classLoader =
+         new URLClassLoader(Array(installedJar.toURI.toURL), Thread.currentThread.getContextClassLoader)
+       try {
+-        val plugin = classLoader.loadClass("Plugin").getDeclaredConstructor().newInstance().asInstanceOf[Plugin]
+-        val pluginId = plugin.pluginId
++        val serviceLoader = getServiceLoader(classLoader)
++        val plugins = serviceLoader.iterator().asScala.toList.filter { plugin =>
++          plugin.getClass.getClassLoader == classLoader
++        }
+ 
+-        // Check duplication
+-        instance.getPlugins().find(_.pluginId == pluginId) match {
+-          case Some(x) =>
+-            logger.warn(s"Plugin ${pluginId} is duplicated. ${x.pluginJar.getName} is available.")
+-            classLoader.close()
+-          case None =>
+-            // Migration
+-            val solidbase = new Solidbase()
+-            solidbase
+-              .migrate(
+-                conn,
+-                classLoader,
+-                DatabaseConfig.liquiDriver,
+-                new Module(plugin.pluginId, plugin.versions*)
+-              )
+-            conn.commit()
+-
+-            // Check database version
+-            val databaseVersion = manager.getCurrentVersion(plugin.pluginId)
+-            val pluginVersion = plugin.versions.last.getVersion
+-            if (databaseVersion != pluginVersion) {
+-              throw new IllegalStateException(
+-                s"Plugin version is ${pluginVersion}, but database version is ${databaseVersion}"
+-              )
+-            }
++        if (plugins.isEmpty) {
++          logger.warn(s"No plugin found in ${pluginJar.getName}")
++          classLoader.close()
++        }
+ 
+-            // Initialize
+-            plugin.initialize(instance, context, settings)
+-            instance.addPlugin(
+-              PluginInfo(
+-                pluginId = plugin.pluginId,
+-                pluginName = plugin.pluginName,
+-                pluginVersion = plugin.versions.last.getVersion,
+-                gitbucketVersion = getGitBucketVersion(installedJar.getName),
+-                description = plugin.description,
+-                pluginClass = plugin,
+-                pluginJar = pluginJar,
+-                classLoader = classLoader
++        plugins.foreach { plugin =>
++          val pluginId = plugin.pluginId
++
++          // Check duplication
++          instance.getPlugins().find(_.pluginId == pluginId) match {
++            case Some(x) =>
++              logger.warn(s"Plugin ${pluginId} is duplicated. ${x.pluginJar.getName} is available.")
++              classLoader.close()
++            case None =>
++              // Migration
++              val solidbase = new Solidbase()
++              solidbase
++                .migrate(
++                  conn,
++                  classLoader,
++                  DatabaseConfig.liquiDriver,
++                  new Module(plugin.pluginId, plugin.versions*)
++                )
++              conn.commit()
++
++              // Check database version
++              val databaseVersion = manager.getCurrentVersion(plugin.pluginId)
++              val pluginVersion = plugin.versions.last.getVersion
++              if (databaseVersion != pluginVersion) {
++                throw new IllegalStateException(
++                  s"Plugin version is ${pluginVersion}, but database version is ${databaseVersion}"
++                )
++              }
++
++              // Initialize
++              plugin.initialize(instance, context, settings)
++              instance.addPlugin(
++                PluginInfo(
++                  pluginId = plugin.pluginId,
++                  pluginName = plugin.pluginName,
++                  pluginVersion = plugin.versions.last.getVersion,
++                  gitbucketVersion = getGitBucketVersion(installedJar.getName),
++                  description = plugin.description,
++                  pluginClass = plugin,
++                  pluginJar = pluginJar,
++                  classLoader = classLoader
++                )
+               )
+-            )
++          }
+         }
+       } catch {
+         case e: Throwable =>
+@@ -370,7 +428,10 @@ object PluginRegistry {
+         case e: Exception =>
+           logger.error(s"Error during plugin shutdown: ${plugin.pluginJar.getName}", e)
+       } finally {
+-        plugin.classLoader.close()
++        plugin.classLoader match {
++          case c: URLClassLoader => c.close()
++          case _ =>
++        }
+       }
+     }
+   }
+@@ -407,7 +468,7 @@ case class PluginInfo(
+   override val description: String,
+   pluginClass: Plugin,
+   pluginJar: File,
+-  classLoader: URLClassLoader
++  classLoader: ClassLoader
+ ) extends PluginInfoBase(pluginId, pluginName, pluginVersion, gitbucketVersion, description)
+ 
+ class PluginWatchThread(context: ServletContext, dir: String) extends Thread with SystemSettingsService {

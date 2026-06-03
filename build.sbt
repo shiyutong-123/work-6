@@ -68,7 +68,8 @@ libraryDependencies ++= Seq(
   "net.i2p.crypto"                  % "eddsa"                     % "0.3.0",
   "is.tagomor.woothee"              % "woothee-java"              % "1.11.0",
   "org.ec4j.core"                   % "ec4j-core"                 % "1.2.0",
-  "org.kohsuke"                     % "github-api"                % "1.330"         % "test"
+  "org.kohsuke"                     % "github-api"                % "1.330"         % "test",
+  "org.specs2"                     %% "specs2-core"               % "4.20.9"        % "test"
 )
 
 // Compiler settings

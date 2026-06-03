@@ -103,21 +103,29 @@ trait ReferrerAuthenticator { self: ControllerBase & RepositoryService & Account
  * Allows only signed in users who have read permission for the repository.
  */
 trait ReadableUsersAuthenticator { self: ControllerBase & RepositoryService & AccountService =>
+  private val authLock = new java.util.concurrent.locks.ReentrantLock()
+
   protected def readableUsersOnly(action: RepositoryInfo => Any) = { authenticate(action) }
   protected def readableUsersOnly[T](action: (T, RepositoryInfo) => Any) = (form: T) => {
     authenticate(action(form, _))
   }
 
   private def authenticate(action: RepositoryInfo => Any) = {
-    val userName = params("owner")
-    val repoName = params("repository")
-    getRepository(userName, repoName).map { repository =>
-      if (isReadable(repository.repository, context.loginAccount) || !repository.repository.isPrivate) {
-        action(repository)
-      } else {
-        Unauthorized()
-      }
-    } getOrElse NotFound()
+    val useLock = gitbucket.core.util.ConfigUtil.getConfigValue[Boolean]("gitbucket.authenticator.lock").getOrElse(false)
+    if (useLock) authLock.lock()
+    try {
+      val userName = params("owner")
+      val repoName = params("repository")
+      getRepository(userName, repoName).map { repository =>
+        if (isReadable(repository.repository, context.loginAccount) || !repository.repository.isPrivate) {
+          action(repository)
+        } else {
+          Unauthorized()
+        }
+      } getOrElse NotFound()
+    } finally {
+      if (useLock) authLock.unlock()
+    }
   }
 }
 

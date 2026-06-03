@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<changeSet>
+  <!--================================================================================================-->
+  <!-- ISSUE_COMMENT -->
+  <!--================================================================================================-->
+  <addColumn tableName="ISSUE_COMMENT">
+    <column name="FEATURE_TOGGLE" type="boolean" nullable="false" defaultValueBoolean="true"/>
+  </addColumn>
+
+</changeSet>

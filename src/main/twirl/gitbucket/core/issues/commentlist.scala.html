@@ -26,6 +26,9 @@
     @if(comment.action != "commit" && comment.action != "merge" && comment.action != "refer"
     && (isManageable || context.loginAccount.exists(_.userName == comment.commentedUserName))){
       <span class="pull-right">
+        <span class="feature-toggle" data-comment-id="@comment.commentId" style="cursor: pointer; margin-right: 8px;">
+          <i class="octicon @if(comment.featureToggle){octicon-check color-fg-success}else{octicon-x color-fg-danger}" aria-label="Feature Toggle"></i>
+        </span>
         <a href="#" data-comment-id="@comment.commentId"><i class="octicon octicon-pencil" aria-label="Edit"></i></a>&nbsp;
         <a href="#" data-comment-id="@comment.commentId"><i class="octicon octicon-x" aria-label="Remove"></i></a>
       </span>
@@ -380,6 +383,19 @@ $(function(){
         }
       });
     }
+    return false;
+  });
+  $('.feature-toggle').click(function(){
+    const id = $(this).data('comment-id');
+    const $icon = $(this).find('i');
+    const enabled = $icon.hasClass('octicon-check');
+    $.post('@helpers.url(repository)/issue_comments/toggle/' + id, { featureToggle: !enabled }, function(data){
+      if(data.featureToggle){
+        $icon.removeClass('octicon-x color-fg-danger').addClass('octicon-check color-fg-success');
+      } else {
+        $icon.removeClass('octicon-check color-fg-success').addClass('octicon-x color-fg-danger');
+      }
+    });
     return false;
   });
 }

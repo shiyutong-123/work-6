@@ -19,8 +19,9 @@ trait IssueCommentComponent extends TemplateComponent { self: Profile =>
     val content = column[String]("CONTENT")
     val registeredDate = column[java.util.Date]("REGISTERED_DATE")
     val updatedDate = column[java.util.Date]("UPDATED_DATE")
+    val featureToggle = column[Boolean]("FEATURE_TOGGLE")
     def * =
-      (userName, repositoryName, issueId, commentId, action, commentedUserName, content, registeredDate, updatedDate)
+      (userName, repositoryName, issueId, commentId, action, commentedUserName, content, registeredDate, updatedDate, featureToggle)
         .mapTo[IssueComment]
 
     def byPrimaryKey(commentId: Int) = this.commentId === commentId.bind
@@ -36,7 +37,8 @@ case class IssueComment(
   commentedUserName: String,
   content: String,
   registeredDate: java.util.Date,
-  updatedDate: java.util.Date
+  updatedDate: java.util.Date,
+  featureToggle: Boolean = true
 ) extends Comment
 
 trait CommitCommentComponent extends TemplateComponent { self: Profile =>

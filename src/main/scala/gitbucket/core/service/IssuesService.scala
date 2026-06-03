@@ -774,6 +774,12 @@ trait IssuesService {
     IssueComments.filter(_.byPrimaryKey(commentId)).map(t => (t.content, t.updatedDate)).update(content, currentDate)
   }
 
+  def toggleCommentFeature(owner: String, repository: String, commentId: Int, featureToggle: Boolean)(implicit
+    s: Session
+  ): Int = {
+    IssueComments.filter(_.byPrimaryKey(commentId)).map(_.featureToggle).update(featureToggle)
+  }
+
   def deleteComment(owner: String, repository: String, issueId: Int, commentId: Int)(implicit
     context: Context,
     s: Session

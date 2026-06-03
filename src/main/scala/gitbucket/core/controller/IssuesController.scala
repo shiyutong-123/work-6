@@ -262,6 +262,19 @@ trait IssuesControllerBase extends ControllerBase {
     }
   })
 
+  ajaxPost("/:owner/:repository/issue_comments/toggle/:id")(readableUsersOnly { repository =>
+    context.withLoginAccount { loginAccount =>
+      getComment(repository.owner, repository.name, params("id")).map { comment =>
+        if (isEditableContent(repository.owner, repository.name, comment.commentedUserName, loginAccount)) {
+          val featureToggle = params.get("featureToggle").exists(_.toBoolean)
+          toggleCommentFeature(repository.owner, repository.name, comment.commentId, featureToggle)
+          contentType = formats("json")
+          org.json4s.jackson.Serialization.write(Map("featureToggle" -> featureToggle))
+        } else Unauthorized()
+      } getOrElse NotFound()
+    }
+  })
+
   ajaxGet("/:owner/:repository/issues/_data/:id")(readableUsersOnly { repository =>
     context.withLoginAccount { loginAccount =>
       getIssue(repository.owner, repository.name, params("id")) map { x =>

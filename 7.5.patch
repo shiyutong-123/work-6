@@ -1,0 +1,67 @@
+diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
+index 1ef66e5b..d68ab885 100644
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -40,3 +40,16 @@ jobs:
+       with:
+         name: gitbucket-java${{ matrix.java }}-${{ github.sha }}
+         path: ./target/executable/gitbucket.*
++
++  validate-selinux-policy:
++    runs-on: ubuntu-latest
++    timeout-minutes: 10
++    steps:
++    - uses: actions/checkout@v6
++    - name: Install SELinux policy development tools
++      run: sudo apt-get update && sudo apt-get install -y selinux-policy-dev
++    - name: Validate SELinux policy syntax
++      run: |
++        cd contrib/linux/redhat/selinux
++        checkmodule -M -m -o gitbucket.mod gitbucket.te
++        semodule_package -o gitbucket.pp -m gitbucket.mod
+diff --git a/contrib/linux/redhat/selinux/gitbucket.te b/contrib/linux/redhat/selinux/gitbucket.te
+index da3a5748..72db0eaa 100644
+--- a/contrib/linux/redhat/selinux/gitbucket.te
++++ b/contrib/linux/redhat/selinux/gitbucket.te
+@@ -1,14 +1,18 @@
+-module gitbucket 1.0;
++module gitbucket 1.1;
+ 
+ require {
+ 	type smtp_port_t;
+ 	type tomcat_t;
+ 	type tomcat_var_lib_t;
+ 	type unreserved_port_t;
++	type init_t;
++	type bin_t;
++	type var_lib_t;
++	type var_log_t;
+ 
+-	class file { execute };
+-	class tcp_socket { name_bind };
+-	class tcp_socket { name_connect };
++	class file { execute read write create open getattr append };
++	class dir { read write search add_name remove_name getattr open };
++	class tcp_socket { name_bind name_connect };
+ }
+ 
+ # allow tomcat to send emails
+@@ -19,3 +23,18 @@ allow tomcat_t tomcat_var_lib_t:file { execute };
+ 
+ # allow tomcat to serve repositories via SSH
+ allow tomcat_t unreserved_port_t:tcp_socket { name_bind };
++
++# allow gitbucket systemd service to access /var/lib/gitbucket
++allow init_t var_lib_t:dir { search getattr open };
++allow init_t var_lib_t:file { read open getattr };
++
++# allow gitbucket service to read/write its data directory
++allow tomcat_t var_lib_t:dir { read write search add_name remove_name getattr open };
++allow tomcat_t var_lib_t:file { read write create open getattr append execute };
++
++# allow gitbucket service to execute java binary
++allow tomcat_t bin_t:file { execute read open getattr };
++
++# allow gitbucket service to write logs
++allow tomcat_t var_log_t:dir { search getattr open add_name write };
++allow tomcat_t var_log_t:file { create write append open read getattr };

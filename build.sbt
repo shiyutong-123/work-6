@@ -62,6 +62,8 @@ libraryDependencies ++= Seq(
   "javax.servlet"                   % "javax.servlet-api"         % "3.1.0"         % "provided",
   "junit"                           % "junit"                     % "4.13.2"        % "test",
   "org.scalatra"                   %% "scalatra-scalatest-javax"  % ScalatraVersion % "test",
+  "org.specs2"                     %% "specs2-core"               % "4.20.9"        % "test",
+  "org.specs2"                     %% "specs2-mock"               % "4.20.9"        % "test",
   "org.mockito"                     % "mockito-core"              % "5.23.0"        % "test",
   "org.testcontainers"              % "testcontainers-mysql"      % "2.0.5"         % "test",
   "org.testcontainers"              % "testcontainers-postgresql" % "2.0.5"         % "test",

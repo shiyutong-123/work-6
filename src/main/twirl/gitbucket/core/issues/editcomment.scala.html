@@ -1,4 +1,4 @@
-@(content: String, commentId: Int,
+@(content: String, commentId: Int, featureToggle: Boolean,
   repository: gitbucket.core.service.RepositoryService.RepositoryInfo)(implicit context: gitbucket.core.controller.Context)
 <span id="error-edit-content-@commentId" class="error"></span>
 @gitbucket.core.helper.html.preview(
@@ -15,6 +15,12 @@
   focus              = true,
   tabIndex           = 1
 )
+<div class="checkbox">
+  <label>
+    <input type="checkbox" id="feature-toggle-@commentId" name="feature_toggle" @if(featureToggle){checked}>
+    feature_toggle
+  </label>
+</div>
 <div class="pull-right">
   <input type="button" id="cancel-comment-@commentId" class="btn btn-default" value="Cancel"/>
   <input type="button" id="update-comment-@commentId" class="btn btn-success" value="Update comment"/>
@@ -28,14 +34,17 @@ $(function(){
   };
 
   $('#update-comment-@commentId').click(function(){
-    var content = $(this).parent().parent().find('textarea[name=content]').val();
+    var $container = $(this).closest('.panel-body');
+    var content = $container.find('textarea[name=content]').val();
+    var featureToggle = $container.find('input[name=feature_toggle]').prop('checked');
     $('#update-comment-@commentId, #cancel-comment-@commentId').attr('disabled', 'disabled');
     $.ajax({
       url: '@context.path/@repository.owner/@repository.name/issue_comments/edit/@commentId',
       type: 'POST',
       data: {
         issueId : 0,	// TODO
-        content : content
+        content : content,
+        feature_toggle : featureToggle
       }
     }).done(
       callback

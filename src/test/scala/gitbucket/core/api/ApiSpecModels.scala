@@ -640,6 +640,7 @@ object ApiSpecModels {
        |"id":1,
        |"user":$jsonUser,
        |"body":"Me too",
+       |"feature_toggle":true,
        |"created_at":"2011-04-14T16:00:49Z",
        |"updated_at":"2011-04-14T16:00:49Z",
        |"html_url":"http://gitbucket.exmple.com/octocat/Hello-World/issues/1347#comment-1"
@@ -649,6 +650,7 @@ object ApiSpecModels {
        |"id":1,
        |"user":$jsonUser,
        |"body":"Me too",
+       |"feature_toggle":true,
        |"created_at":"2011-04-14T16:00:49Z",
        |"updated_at":"2011-04-14T16:00:49Z",
        |"html_url":"http://gitbucket.exmple.com/octocat/Hello-World/pull/1347#comment-1"

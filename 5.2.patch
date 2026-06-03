@@ -1,0 +1,372 @@
+diff --git a/src/main/scala/gitbucket/core/GitBucketCoreModule.scala b/src/main/scala/gitbucket/core/GitBucketCoreModule.scala
+index ff4b726d..0a9a3366 100644
+--- a/src/main/scala/gitbucket/core/GitBucketCoreModule.scala
++++ b/src/main/scala/gitbucket/core/GitBucketCoreModule.scala
+@@ -124,7 +124,8 @@ object GitBucketCoreModule
+       new Version("4.44.0", new LiquibaseMigration("update/gitbucket-core_4.44.xml")),
+       new Version("4.45.0"),
+       new Version("4.46.0", new LiquibaseMigration("update/gitbucket-core_4.46.xml")),
+-      new Version("4.46.1")
++      new Version("4.46.1"),
++      new Version("4.46.2", new LiquibaseMigration("update/gitbucket-core_4.46.2.xml"))
+     ) {
+   java.util.logging.Logger.getLogger("liquibase").setLevel(Level.SEVERE)
+ }
+diff --git a/src/main/scala/gitbucket/core/api/ApiComment.scala b/src/main/scala/gitbucket/core/api/ApiComment.scala
+index 6dc739f0..b47fdfdf 100644
+--- a/src/main/scala/gitbucket/core/api/ApiComment.scala
++++ b/src/main/scala/gitbucket/core/api/ApiComment.scala
+@@ -8,7 +8,7 @@ import java.util.Date
+ /**
+  * https://developer.github.com/v3/issues/comments/
+  */
+-case class ApiComment(id: Int, user: ApiUser, body: String, created_at: Date, updated_at: Date)(
++case class ApiComment(id: Int, user: ApiUser, body: String, feature_toggle: Boolean, created_at: Date, updated_at: Date)(
+   repositoryName: RepositoryName,
+   issueId: Int,
+   isPullRequest: Boolean
+@@ -31,6 +31,7 @@ object ApiComment {
+       id = comment.commentId,
+       user = user,
+       body = comment.content,
++      feature_toggle = comment.featureToggle,
+       created_at = comment.registeredDate,
+       updated_at = comment.updatedDate
+     )(repositoryName, issueId, isPullRequest)
+diff --git a/src/main/scala/gitbucket/core/api/CreateAComment.scala b/src/main/scala/gitbucket/core/api/CreateAComment.scala
+index f636e8a9..4b700ce6 100644
+--- a/src/main/scala/gitbucket/core/api/CreateAComment.scala
++++ b/src/main/scala/gitbucket/core/api/CreateAComment.scala
+@@ -4,4 +4,4 @@ package gitbucket.core.api
+  * https://developer.github.com/v3/issues/comments/#create-a-comment
+  * api form
+  */
+-case class CreateAComment(body: String)
++case class CreateAComment(body: String, feature_toggle: Option[Boolean] = None)
+diff --git a/src/main/scala/gitbucket/core/controller/IssuesController.scala b/src/main/scala/gitbucket/core/controller/IssuesController.scala
+index 788227fc..eccdb474 100644
+--- a/src/main/scala/gitbucket/core/controller/IssuesController.scala
++++ b/src/main/scala/gitbucket/core/controller/IssuesController.scala
+@@ -46,8 +46,8 @@ trait IssuesControllerBase extends ControllerBase {
+     priorityId: Option[Int],
+     labelNames: Option[String]
+   )
+-  private case class CommentForm(issueId: Int, content: String)
+-  private case class IssueStateForm(issueId: Int, content: Option[String])
++  private case class CommentForm(issueId: Int, content: String, feature_toggle: Boolean)
++  private case class IssueStateForm(issueId: Int, content: Option[String], feature_toggle: Boolean)
+ 
+   private val issueCreateForm = mapping(
+     "title" -> trim(label("Title", text(required))),
+@@ -67,12 +67,14 @@ trait IssuesControllerBase extends ControllerBase {
+ 
+   private val commentForm = mapping(
+     "issueId" -> label("Issue Id", number()),
+-    "content" -> trim(label("Comment", text(required)))
++    "content" -> trim(label("Comment", text(required))),
++    "feature_toggle" -> trim(label("Feature toggle", boolean()))
+   )(CommentForm.apply)
+ 
+   private val issueStateForm = mapping(
+     "issueId" -> label("Issue Id", number()),
+-    "content" -> trim(optional(text()))
++    "content" -> trim(optional(text())),
++    "feature_toggle" -> trim(label("Feature toggle", boolean()))
+   )(IssueStateForm.apply)
+ 
+   get("/:owner/:repository/issues")(referrersOnly { repository =>
+@@ -216,7 +218,7 @@ trait IssuesControllerBase extends ControllerBase {
+           params
+             .get("action")
+             .filter(_ => isEditableContent(issue.userName, issue.repositoryName, issue.openedUserName, loginAccount))
+-        handleComment(issue, Some(form.content), repository, actionOpt) map { case (issue, id) =>
++        handleComment(issue, Some(form.content), repository, actionOpt, form.feature_toggle) map { case (issue, id) =>
+           redirect(
+             s"/${repository.owner}/${repository.name}/${if (issue.isPullRequest) "pull" else "issues"}/${form.issueId}#comment-$id"
+           )
+@@ -232,7 +234,7 @@ trait IssuesControllerBase extends ControllerBase {
+           params
+             .get("action")
+             .filter(_ => isEditableContent(issue.userName, issue.repositoryName, issue.openedUserName, loginAccount))
+-        handleComment(issue, form.content, repository, actionOpt) map { case (issue, id) =>
++        handleComment(issue, form.content, repository, actionOpt, form.feature_toggle) map { case (issue, id) =>
+           redirect(
+             s"/${repository.owner}/${repository.name}/${if (issue.isPullRequest) "pull" else "issues"}/${form.issueId}#comment-$id"
+           )
+@@ -245,7 +247,14 @@ trait IssuesControllerBase extends ControllerBase {
+     context.withLoginAccount { loginAccount =>
+       getComment(repository.owner, repository.name, params("id")).map { comment =>
+         if (isEditableContent(repository.owner, repository.name, comment.commentedUserName, loginAccount)) {
+-          updateComment(repository.owner, repository.name, comment.issueId, comment.commentId, form.content)
++          updateComment(
++            repository.owner,
++            repository.name,
++            comment.issueId,
++            comment.commentId,
++            form.content,
++            form.feature_toggle
++          )
+           redirect(s"/${repository.owner}/${repository.name}/issue_comments/_data/${comment.commentId}")
+         } else Unauthorized()
+       } getOrElse NotFound()
+@@ -301,7 +310,7 @@ trait IssuesControllerBase extends ControllerBase {
+       getComment(repository.owner, repository.name, params("id")) map { x =>
+         if (isEditableContent(x.userName, x.repositoryName, x.commentedUserName, loginAccount)) {
+           params.get("dataType") collect {
+-            case t if t == "html" => html.editcomment(x.content, x.commentId, repository)
++            case t if t == "html" => html.editcomment(x.content, x.commentId, x.featureToggle, repository)
+           } getOrElse {
+             contentType = formats("json")
+             val content = helpers
+@@ -320,7 +329,8 @@ trait IssuesControllerBase extends ControllerBase {
+               .toString()
+             org.json4s.jackson.Serialization.write(
+               Map(
+-                "content" -> content
++                "content" -> content,
++                "feature_toggle" -> x.featureToggle
+               )
+             )
+           }
+diff --git a/src/main/scala/gitbucket/core/controller/api/ApiIssueCommentControllerBase.scala b/src/main/scala/gitbucket/core/controller/api/ApiIssueCommentControllerBase.scala
+index 3e8892e6..2f431581 100644
+--- a/src/main/scala/gitbucket/core/controller/api/ApiIssueCommentControllerBase.scala
++++ b/src/main/scala/gitbucket/core/controller/api/ApiIssueCommentControllerBase.scala
+@@ -50,8 +50,14 @@ trait ApiIssueCommentControllerBase extends ControllerBase {
+       issue <- getIssue(repository.owner, repository.name, issueComment.issueId.toString)
+     } yield {
+       if (isEditable(repository.owner, repository.name, issueComment.commentedUserName)) {
+-        val body = extractFromJsonBody[CreateAComment].map(_.body)
+-        updateCommentByApi(repository, issue, issueComment.commentId.toString, body)
++        val requestBody = extractFromJsonBody[CreateAComment]
++        updateCommentByApi(
++          repository,
++          issue,
++          issueComment.commentId.toString,
++          requestBody.map(_.body),
++          requestBody.flatMap(_.feature_toggle).orElse(Some(issueComment.featureToggle))
++        )
+         getComment(repository.owner, repository.name, commentId) match {
+           case Some(issueComment) =>
+             JsonFormat(
+@@ -114,9 +120,10 @@ trait ApiIssueCommentControllerBase extends ControllerBase {
+     (for {
+       issueId <- params("id").toIntOpt
+       issue <- getIssue(repository.owner, repository.name, issueId.toString)
+-      body <- extractFromJsonBody[CreateAComment].map(_.body) if !body.isEmpty
++      requestBody <- extractFromJsonBody[CreateAComment]
++      body = requestBody.body if !body.isEmpty
+       action = params.get("action").filter(_ => isEditable(issue.userName, issue.repositoryName, issue.openedUserName))
+-      (issue, id) <- handleComment(issue, Some(body), repository, action)
++      (issue, id) <- handleComment(issue, Some(body), repository, action, requestBody.feature_toggle.getOrElse(true))
+       issueComment <- getComment(repository.owner, repository.name, id.toString())
+     } yield {
+       JsonFormat(
+diff --git a/src/main/scala/gitbucket/core/model/Comment.scala b/src/main/scala/gitbucket/core/model/Comment.scala
+index a5d920e6..e50351ef 100644
+--- a/src/main/scala/gitbucket/core/model/Comment.scala
++++ b/src/main/scala/gitbucket/core/model/Comment.scala
+@@ -17,11 +17,22 @@ trait IssueCommentComponent extends TemplateComponent { self: Profile =>
+     val action = column[String]("ACTION")
+     val commentedUserName = column[String]("COMMENTED_USER_NAME")
+     val content = column[String]("CONTENT")
++    val featureToggle = column[Boolean]("FEATURE_TOGGLE")
+     val registeredDate = column[java.util.Date]("REGISTERED_DATE")
+     val updatedDate = column[java.util.Date]("UPDATED_DATE")
+     def * =
+-      (userName, repositoryName, issueId, commentId, action, commentedUserName, content, registeredDate, updatedDate)
+-        .mapTo[IssueComment]
++      (
++        userName,
++        repositoryName,
++        issueId,
++        commentId,
++        action,
++        commentedUserName,
++        content,
++        featureToggle,
++        registeredDate,
++        updatedDate
++      ).mapTo[IssueComment]
+ 
+     def byPrimaryKey(commentId: Int) = this.commentId === commentId.bind
+   }
+@@ -35,6 +46,7 @@ case class IssueComment(
+   action: String,
+   commentedUserName: String,
+   content: String,
++  featureToggle: Boolean = true,
+   registeredDate: java.util.Date,
+   updatedDate: java.util.Date
+ ) extends Comment
+diff --git a/src/main/scala/gitbucket/core/service/HandleCommentService.scala b/src/main/scala/gitbucket/core/service/HandleCommentService.scala
+index 70a44c2d..92656a60 100644
+--- a/src/main/scala/gitbucket/core/service/HandleCommentService.scala
++++ b/src/main/scala/gitbucket/core/service/HandleCommentService.scala
+@@ -26,7 +26,8 @@ trait HandleCommentService {
+     issue: Issue,
+     content: Option[String],
+     repository: RepositoryService.RepositoryInfo,
+-    actionOpt: Option[String]
++    actionOpt: Option[String],
++    featureToggle: Boolean = true
+   )(implicit context: Context, s: Session) = {
+     context.loginAccount.flatMap { loginAccount =>
+       val owner = repository.owner
+@@ -73,7 +74,8 @@ trait HandleCommentService {
+               userName,
+               issue.issueId,
+               content,
+-              action.map(_ + "_comment").getOrElse("comment")
++              action.map(_ + "_comment").getOrElse("comment"),
++              featureToggle = featureToggle
+             )
+           )
+ 
+@@ -152,7 +154,8 @@ trait HandleCommentService {
+     repository: RepositoryService.RepositoryInfo,
+     issue: Issue,
+     commentId: String,
+-    content: Option[String]
++    content: Option[String],
++    featureToggle: Option[Boolean] = None
+   )(implicit context: Context, s: Session): Option[(Issue, Int)] = {
+     context.loginAccount.flatMap { loginAccount =>
+       val owner = repository.owner
+@@ -161,7 +164,9 @@ trait HandleCommentService {
+       content match {
+         case Some(content) =>
+           // Update comment
+-          val _commentId = Some(updateComment(owner, name, issue.issueId, commentId.toInt, content))
++          val _commentId = Some(
++            updateComment(owner, name, issue.issueId, commentId.toInt, content, featureToggle.getOrElse(true))
++          )
+           // Record comment activity
+           val commentInfo = if (issue.isPullRequest) {
+             PullRequestCommentInfo(owner, name, userName, content, issue.issueId)
+diff --git a/src/main/scala/gitbucket/core/service/IssuesService.scala b/src/main/scala/gitbucket/core/service/IssuesService.scala
+index 98323338..73cccb73 100644
+--- a/src/main/scala/gitbucket/core/service/IssuesService.scala
++++ b/src/main/scala/gitbucket/core/service/IssuesService.scala
+@@ -583,7 +583,8 @@ trait IssuesService {
+     loginUser: String,
+     issueId: Int,
+     content: String,
+-    action: String
++    action: String,
++    featureToggle: Boolean = true
+   )(implicit s: Session): Int = {
+     Issues.filter(_.byPrimaryKey(owner, repository, issueId)).map(_.updatedDate).update(currentDate)
+     IssueComments returning IssueComments.map(_.commentId) insert IssueComment(
+@@ -593,6 +594,7 @@ trait IssuesService {
+       action = action,
+       commentedUserName = loginUser,
+       content = content,
++      featureToggle = featureToggle,
+       registeredDate = currentDate,
+       updatedDate = currentDate
+     )
+@@ -767,11 +769,19 @@ trait IssuesService {
+       .update(priorityId, currentDate)
+   }
+ 
+-  def updateComment(owner: String, repository: String, issueId: Int, commentId: Int, content: String)(implicit
+-    s: Session
+-  ): Int = {
++  def updateComment(
++    owner: String,
++    repository: String,
++    issueId: Int,
++    commentId: Int,
++    content: String,
++    featureToggle: Boolean = true
++  )(implicit s: Session): Int = {
+     Issues.filter(_.byPrimaryKey(owner, repository, issueId)).map(_.updatedDate).update(currentDate)
+-    IssueComments.filter(_.byPrimaryKey(commentId)).map(t => (t.content, t.updatedDate)).update(content, currentDate)
++    IssueComments
++      .filter(_.byPrimaryKey(commentId))
++      .map(t => (t.content, t.featureToggle, t.updatedDate))
++      .update(content, featureToggle, currentDate)
+   }
+ 
+   def deleteComment(owner: String, repository: String, issueId: Int, commentId: Int)(implicit
+diff --git a/src/main/twirl/gitbucket/core/issues/commentform.scala.html b/src/main/twirl/gitbucket/core/issues/commentform.scala.html
+index 2b2111f5..5ba142f6 100644
+--- a/src/main/twirl/gitbucket/core/issues/commentform.scala.html
++++ b/src/main/twirl/gitbucket/core/issues/commentform.scala.html
+@@ -21,6 +21,12 @@
+           elastic            = true,
+           tabIndex           = 1
+         )
++        <div class="checkbox">
++          <label>
++            <input type="checkbox" name="feature_toggle" checked>
++            feature_toggle
++          </label>
++        </div>
+         <div class="text-right">
+           <input type="hidden" name="issueId" value="@issue.issueId"/>
+           @if((reopenable || !issue.closed) && (isManageable || issue.openedUserName == context.loginAccount.get.userName)){
+diff --git a/src/main/twirl/gitbucket/core/issues/editcomment.scala.html b/src/main/twirl/gitbucket/core/issues/editcomment.scala.html
+index 02df795e..9030f606 100644
+--- a/src/main/twirl/gitbucket/core/issues/editcomment.scala.html
++++ b/src/main/twirl/gitbucket/core/issues/editcomment.scala.html
+@@ -1,4 +1,4 @@
+-@(content: String, commentId: Int,
++@(content: String, commentId: Int, featureToggle: Boolean,
+   repository: gitbucket.core.service.RepositoryService.RepositoryInfo)(implicit context: gitbucket.core.controller.Context)
+ <span id="error-edit-content-@commentId" class="error"></span>
+ @gitbucket.core.helper.html.preview(
+@@ -15,6 +15,12 @@
+   focus              = true,
+   tabIndex           = 1
+ )
++<div class="checkbox">
++  <label>
++    <input type="checkbox" id="feature-toggle-@commentId" name="feature_toggle" @if(featureToggle){checked}>
++    feature_toggle
++  </label>
++</div>
+ <div class="pull-right">
+   <input type="button" id="cancel-comment-@commentId" class="btn btn-default" value="Cancel"/>
+   <input type="button" id="update-comment-@commentId" class="btn btn-success" value="Update comment"/>
+@@ -28,14 +34,17 @@ $(function(){
+   };
+ 
+   $('#update-comment-@commentId').click(function(){
+-    var content = $(this).parent().parent().find('textarea[name=content]').val();
++    var $container = $(this).closest('.panel-body');
++    var content = $container.find('textarea[name=content]').val();
++    var featureToggle = $container.find('input[name=feature_toggle]').prop('checked');
+     $('#update-comment-@commentId, #cancel-comment-@commentId').attr('disabled', 'disabled');
+     $.ajax({
+       url: '@context.path/@repository.owner/@repository.name/issue_comments/edit/@commentId',
+       type: 'POST',
+       data: {
+         issueId : 0,	// TODO
+-        content : content
++        content : content,
++        feature_toggle : featureToggle
+       }
+     }).done(
+       callback
+diff --git a/src/test/scala/gitbucket/core/api/ApiSpecModels.scala b/src/test/scala/gitbucket/core/api/ApiSpecModels.scala
+index 94cb9a2d..ad814858 100644
+--- a/src/test/scala/gitbucket/core/api/ApiSpecModels.scala
++++ b/src/test/scala/gitbucket/core/api/ApiSpecModels.scala
+@@ -640,6 +640,7 @@ object ApiSpecModels {
+        |"id":1,
+        |"user":$jsonUser,
+        |"body":"Me too",
++       |"feature_toggle":true,
+        |"created_at":"2011-04-14T16:00:49Z",
+        |"updated_at":"2011-04-14T16:00:49Z",
+        |"html_url":"http://gitbucket.exmple.com/octocat/Hello-World/issues/1347#comment-1"
+@@ -649,6 +650,7 @@ object ApiSpecModels {
+        |"id":1,
+        |"user":$jsonUser,
+        |"body":"Me too",
++       |"feature_toggle":true,
+        |"created_at":"2011-04-14T16:00:49Z",
+        |"updated_at":"2011-04-14T16:00:49Z",
+        |"html_url":"http://gitbucket.exmple.com/octocat/Hello-World/pull/1347#comment-1"

@@ -21,6 +21,12 @@
           elastic            = true,
           tabIndex           = 1
         )
+        <div class="checkbox">
+          <label>
+            <input type="checkbox" name="feature_toggle" checked>
+            feature_toggle
+          </label>
+        </div>
         <div class="text-right">
           <input type="hidden" name="issueId" value="@issue.issueId"/>
           @if((reopenable || !issue.closed) && (isManageable || issue.openedUserName == context.loginAccount.get.userName)){

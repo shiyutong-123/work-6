@@ -8,7 +8,7 @@ import java.util.Date
 /**
  * https://developer.github.com/v3/issues/comments/
  */
-case class ApiComment(id: Int, user: ApiUser, body: String, created_at: Date, updated_at: Date)(
+case class ApiComment(id: Int, user: ApiUser, body: String, feature_toggle: Boolean, created_at: Date, updated_at: Date)(
   repositoryName: RepositoryName,
   issueId: Int,
   isPullRequest: Boolean
@@ -31,6 +31,7 @@ object ApiComment {
       id = comment.commentId,
       user = user,
       body = comment.content,
+      feature_toggle = comment.featureToggle,
       created_at = comment.registeredDate,
       updated_at = comment.updatedDate
     )(repositoryName, issueId, isPullRequest)

@@ -50,8 +50,14 @@ trait ApiIssueCommentControllerBase extends ControllerBase {
       issue <- getIssue(repository.owner, repository.name, issueComment.issueId.toString)
     } yield {
       if (isEditable(repository.owner, repository.name, issueComment.commentedUserName)) {
-        val body = extractFromJsonBody[CreateAComment].map(_.body)
-        updateCommentByApi(repository, issue, issueComment.commentId.toString, body)
+        val requestBody = extractFromJsonBody[CreateAComment]
+        updateCommentByApi(
+          repository,
+          issue,
+          issueComment.commentId.toString,
+          requestBody.map(_.body),
+          requestBody.flatMap(_.feature_toggle).orElse(Some(issueComment.featureToggle))
+        )
         getComment(repository.owner, repository.name, commentId) match {
           case Some(issueComment) =>
             JsonFormat(
@@ -114,9 +120,10 @@ trait ApiIssueCommentControllerBase extends ControllerBase {
     (for {
       issueId <- params("id").toIntOpt
       issue <- getIssue(repository.owner, repository.name, issueId.toString)
-      body <- extractFromJsonBody[CreateAComment].map(_.body) if !body.isEmpty
+      requestBody <- extractFromJsonBody[CreateAComment]
+      body = requestBody.body if !body.isEmpty
       action = params.get("action").filter(_ => isEditable(issue.userName, issue.repositoryName, issue.openedUserName))
-      (issue, id) <- handleComment(issue, Some(body), repository, action)
+      (issue, id) <- handleComment(issue, Some(body), repository, action, requestBody.feature_toggle.getOrElse(true))
       issueComment <- getComment(repository.owner, repository.name, id.toString())
     } yield {
       JsonFormat(

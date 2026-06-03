@@ -36,7 +36,6 @@ trait OwnerAuthenticator { self: ControllerBase & RepositoryService & AccountSer
       context.loginAccount match {
         case Some(x) if x.isAdmin                      => action(repository)
         case Some(x) if repository.owner == x.userName => action(repository)
-        // TODO Repository management is allowed for only group managers?
         case Some(x) if getGroupMembers(repository.owner).exists { m =>
               m.userName == x.userName && m.isManager
             } =>
@@ -103,21 +102,42 @@ trait ReferrerAuthenticator { self: ControllerBase & RepositoryService & Account
  * Allows only signed in users who have read permission for the repository.
  */
 trait ReadableUsersAuthenticator { self: ControllerBase & RepositoryService & AccountService =>
+  private val readableUsersAuthenticatorLock = new Object()
+
   protected def readableUsersOnly(action: RepositoryInfo => Any) = { authenticate(action) }
   protected def readableUsersOnly[T](action: (T, RepositoryInfo) => Any) = (form: T) => {
     authenticate(action(form, _))
   }
 
   private def authenticate(action: RepositoryInfo => Any) = {
-    val userName = params("owner")
-    val repoName = params("repository")
-    getRepository(userName, repoName).map { repository =>
-      if (isReadable(repository.repository, context.loginAccount) || !repository.repository.isPrivate) {
-        action(repository)
-      } else {
-        Unauthorized()
-      }
-    } getOrElse NotFound()
+    val authenticationResult = withReadableUsersAuthenticatorLock {
+      val userName = params("owner")
+      val repoName = params("repository")
+      getRepository(userName, repoName).map { repository =>
+        if (isReadable(repository.repository, context.loginAccount) || !repository.repository.isPrivate) {
+          Right(repository)
+        } else {
+          Left(Unauthorized())
+        }
+      } getOrElse Left(NotFound())
+    }
+
+    authenticationResult match {
+      case Right(repository) => action(repository)
+      case Left(error)       => error
+    }
+  }
+
+  private def withReadableUsersAuthenticatorLock[A](action: => A): A = {
+    val enabled = context.cache("settings.repositoryViewer.readableUsersAuthenticatorLock") {
+      useReadableUsersAuthenticatorLock
+    }
+
+    if (enabled) {
+      readableUsersAuthenticatorLock.synchronized(action)
+    } else {
+      action
+    }
   }
 }
 

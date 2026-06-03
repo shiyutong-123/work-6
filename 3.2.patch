@@ -1,0 +1,158 @@
+diff --git a/doc/directory.md b/doc/directory.md
+index 47c739f7..f5adaa49 100644
+--- a/doc/directory.md
++++ b/doc/directory.md
+@@ -49,3 +49,11 @@ There are some ways to specify the data directory instead of the default locatio
+   <param-value>PATH_TO_DATADIR</param-value>
+ </context-param>
+ ```
++
++If `RepositoryViewerController` returns intermittent 403 responses under high concurrency, enable the `ReadableUsersAuthenticator` lock in `gitbucket.conf`:
++
++```properties
++repository_viewer_readable_users_lock=true
++```
++
++This setting serializes the permission check inside `ReadableUsersAuthenticator` for each controller instance.
+diff --git a/src/main/scala/gitbucket/core/service/SystemSettingsService.scala b/src/main/scala/gitbucket/core/service/SystemSettingsService.scala
+index 6ec6c8c2..d4ebcce9 100644
+--- a/src/main/scala/gitbucket/core/service/SystemSettingsService.scala
++++ b/src/main/scala/gitbucket/core/service/SystemSettingsService.scala
+@@ -15,7 +15,7 @@ trait SystemSettingsService {
+   def baseUrl(implicit request: HttpServletRequest): String = loadSystemSettings().baseUrl(request)
+ 
+   def saveSystemSettings(settings: SystemSettings): Unit = {
+-    val props = new java.util.Properties()
++    val props = loadSystemSettingsProperties()
+     settings.baseUrl.foreach(x => props.setProperty(BaseURL, x.replaceFirst("/\\Z", "")))
+     settings.information.foreach(x => props.setProperty(Information, x))
+     props.setProperty(AllowAccountRegistration, settings.basicBehavior.allowAccountRegistration.toString)
+@@ -103,13 +103,11 @@ trait SystemSettingsService {
+   }
+ 
+   def loadSystemSettings(): SystemSettings = {
+-    val props = new java.util.Properties()
+-    if (GitBucketConf.exists) {
+-      Using.resource(new java.io.FileInputStream(GitBucketConf)) { in =>
+-        props.load(in)
+-      }
+-    }
+-    loadSystemSettings(props)
++    loadSystemSettings(loadSystemSettingsProperties())
++  }
++
++  def useReadableUsersAuthenticatorLock: Boolean = {
++    getValue(loadSystemSettingsProperties(), RepositoryViewerReadableUsersLock, false)
+   }
+ 
+   def loadSystemSettings(props: java.util.Properties): SystemSettings = {
+@@ -137,11 +135,9 @@ trait SystemSettingsService {
+       Ssh(
+         enabled = getValue(props, SshEnabled, false),
+         bindAddress = {
+-          // try the new-style configuration first
+           getOptionValue[String](props, SshBindAddressHost, None)
+             .map(h => SshAddress(h, getValue(props, SshBindAddressPort, DefaultSshPort), GenericSshUser))
+             .orElse(
+-              // otherwise try to get old-style configuration
+               getOptionValue[String](props, SshHost, None)
+                 .map(_.trim)
+                 .map(h => SshAddress(h, getValue(props, SshPort, DefaultSshPort), GenericSshUser))
+@@ -154,7 +150,7 @@ trait SystemSettingsService {
+         props,
+         UseSMTP,
+         getValue(props, Notification, false)
+-      ), // handle migration scenario from only notification to useSMTP
++      ),
+       if (getValue(props, UseSMTP, getValue(props, Notification, false))) {
+         Some(
+           Smtp(
+@@ -220,6 +216,16 @@ trait SystemSettingsService {
+       getValue(props, ShowFullName, false)
+     )
+   }
++
++  private def loadSystemSettingsProperties(): java.util.Properties = {
++    val props = new java.util.Properties()
++    if (GitBucketConf.exists) {
++      Using.resource(new java.io.FileInputStream(GitBucketConf)) { in =>
++        props.load(in)
++      }
++    }
++    props
++  }
+ }
+ 
+ object SystemSettingsService {
+@@ -467,6 +473,7 @@ object SystemSettingsService {
+   private val RepositoryViewerMaxFiles = "repository_viewer_max_files"
+   private val RepositoryViewerMaxDiffFiles = "repository_viewer_max_diff_files"
+   private val RepositoryViewerMaxDiffLines = "repository_viewer_max_diff_lines"
++  private val RepositoryViewerReadableUsersLock = "repository_viewer_readable_users_lock"
+   private val DefaultBranch = "default_branch"
+   private val ShowFullName = "show_full_name"
+ 
+diff --git a/src/main/scala/gitbucket/core/util/Authenticator.scala b/src/main/scala/gitbucket/core/util/Authenticator.scala
+index ba838d27..9118ce85 100644
+--- a/src/main/scala/gitbucket/core/util/Authenticator.scala
++++ b/src/main/scala/gitbucket/core/util/Authenticator.scala
+@@ -36,7 +36,6 @@ trait OwnerAuthenticator { self: ControllerBase & RepositoryService & AccountSer
+       context.loginAccount match {
+         case Some(x) if x.isAdmin                      => action(repository)
+         case Some(x) if repository.owner == x.userName => action(repository)
+-        // TODO Repository management is allowed for only group managers?
+         case Some(x) if getGroupMembers(repository.owner).exists { m =>
+               m.userName == x.userName && m.isManager
+             } =>
+@@ -103,21 +102,42 @@ trait ReferrerAuthenticator { self: ControllerBase & RepositoryService & Account
+  * Allows only signed in users who have read permission for the repository.
+  */
+ trait ReadableUsersAuthenticator { self: ControllerBase & RepositoryService & AccountService =>
++  private val readableUsersAuthenticatorLock = new Object()
++
+   protected def readableUsersOnly(action: RepositoryInfo => Any) = { authenticate(action) }
+   protected def readableUsersOnly[T](action: (T, RepositoryInfo) => Any) = (form: T) => {
+     authenticate(action(form, _))
+   }
+ 
+   private def authenticate(action: RepositoryInfo => Any) = {
+-    val userName = params("owner")
+-    val repoName = params("repository")
+-    getRepository(userName, repoName).map { repository =>
+-      if (isReadable(repository.repository, context.loginAccount) || !repository.repository.isPrivate) {
+-        action(repository)
+-      } else {
+-        Unauthorized()
+-      }
+-    } getOrElse NotFound()
++    val authenticationResult = withReadableUsersAuthenticatorLock {
++      val userName = params("owner")
++      val repoName = params("repository")
++      getRepository(userName, repoName).map { repository =>
++        if (isReadable(repository.repository, context.loginAccount) || !repository.repository.isPrivate) {
++          Right(repository)
++        } else {
++          Left(Unauthorized())
++        }
++      } getOrElse Left(NotFound())
++    }
++
++    authenticationResult match {
++      case Right(repository) => action(repository)
++      case Left(error)       => error
++    }
++  }
++
++  private def withReadableUsersAuthenticatorLock[A](action: => A): A = {
++    val enabled = context.cache("settings.repositoryViewer.readableUsersAuthenticatorLock") {
++      useReadableUsersAuthenticatorLock
++    }
++
++    if (enabled) {
++      readableUsersAuthenticatorLock.synchronized(action)
++    } else {
++      action
++    }
+   }
+ }
+ 

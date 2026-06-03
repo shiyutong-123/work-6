@@ -15,7 +15,7 @@ trait SystemSettingsService {
   def baseUrl(implicit request: HttpServletRequest): String = loadSystemSettings().baseUrl(request)
 
   def saveSystemSettings(settings: SystemSettings): Unit = {
-    val props = new java.util.Properties()
+    val props = loadSystemSettingsProperties()
     settings.baseUrl.foreach(x => props.setProperty(BaseURL, x.replaceFirst("/\\Z", "")))
     settings.information.foreach(x => props.setProperty(Information, x))
     props.setProperty(AllowAccountRegistration, settings.basicBehavior.allowAccountRegistration.toString)
@@ -103,13 +103,11 @@ trait SystemSettingsService {
   }
 
   def loadSystemSettings(): SystemSettings = {
-    val props = new java.util.Properties()
-    if (GitBucketConf.exists) {
-      Using.resource(new java.io.FileInputStream(GitBucketConf)) { in =>
-        props.load(in)
-      }
-    }
-    loadSystemSettings(props)
+    loadSystemSettings(loadSystemSettingsProperties())
+  }
+
+  def useReadableUsersAuthenticatorLock: Boolean = {
+    getValue(loadSystemSettingsProperties(), RepositoryViewerReadableUsersLock, false)
   }
 
   def loadSystemSettings(props: java.util.Properties): SystemSettings = {
@@ -137,11 +135,9 @@ trait SystemSettingsService {
       Ssh(
         enabled = getValue(props, SshEnabled, false),
         bindAddress = {
-          // try the new-style configuration first
           getOptionValue[String](props, SshBindAddressHost, None)
             .map(h => SshAddress(h, getValue(props, SshBindAddressPort, DefaultSshPort), GenericSshUser))
             .orElse(
-              // otherwise try to get old-style configuration
               getOptionValue[String](props, SshHost, None)
                 .map(_.trim)
                 .map(h => SshAddress(h, getValue(props, SshPort, DefaultSshPort), GenericSshUser))
@@ -154,7 +150,7 @@ trait SystemSettingsService {
         props,
         UseSMTP,
         getValue(props, Notification, false)
-      ), // handle migration scenario from only notification to useSMTP
+      ),
       if (getValue(props, UseSMTP, getValue(props, Notification, false))) {
         Some(
           Smtp(
@@ -219,6 +215,16 @@ trait SystemSettingsService {
       getValue(props, DefaultBranch, "main"),
       getValue(props, ShowFullName, false)
     )
+  }
+
+  private def loadSystemSettingsProperties(): java.util.Properties = {
+    val props = new java.util.Properties()
+    if (GitBucketConf.exists) {
+      Using.resource(new java.io.FileInputStream(GitBucketConf)) { in =>
+        props.load(in)
+      }
+    }
+    props
   }
 }
 
@@ -467,6 +473,7 @@ object SystemSettingsService {
   private val RepositoryViewerMaxFiles = "repository_viewer_max_files"
   private val RepositoryViewerMaxDiffFiles = "repository_viewer_max_diff_files"
   private val RepositoryViewerMaxDiffLines = "repository_viewer_max_diff_lines"
+  private val RepositoryViewerReadableUsersLock = "repository_viewer_readable_users_lock"
   private val DefaultBranch = "default_branch"
   private val ShowFullName = "show_full_name"
 

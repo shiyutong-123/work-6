@@ -49,3 +49,11 @@ There are some ways to specify the data directory instead of the default locatio
   <param-value>PATH_TO_DATADIR</param-value>
 </context-param>
 ```
+
+If `RepositoryViewerController` returns intermittent 403 responses under high concurrency, enable the `ReadableUsersAuthenticator` lock in `gitbucket.conf`:
+
+```properties
+repository_viewer_readable_users_lock=true
+```
+
+This setting serializes the permission check inside `ReadableUsersAuthenticator` for each controller instance.

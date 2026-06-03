@@ -101,8 +101,16 @@ trait ReferrerAuthenticator { self: ControllerBase & RepositoryService & Account
 
 /**
  * Allows only signed in users who have read permission for the repository.
+ *
+ * Under high concurrency, the trait mixin pattern can cause 403 errors due to race conditions
+ * in the multi-step authenticate process (params read -> DB query -> permission check -> action).
+ * Enable the repository-level lock via JVM system property: -Dgitbucket.authenticator.lock=true
  */
 trait ReadableUsersAuthenticator { self: ControllerBase & RepositoryService & AccountService =>
+
+  private val authenticatorLockEnabled: Boolean =
+    System.getProperty("gitbucket.authenticator.lock", "false").toBoolean
+
   protected def readableUsersOnly(action: RepositoryInfo => Any) = { authenticate(action) }
   protected def readableUsersOnly[T](action: (T, RepositoryInfo) => Any) = (form: T) => {
     authenticate(action(form, _))
@@ -111,6 +119,17 @@ trait ReadableUsersAuthenticator { self: ControllerBase & RepositoryService & Ac
   private def authenticate(action: RepositoryInfo => Any) = {
     val userName = params("owner")
     val repoName = params("repository")
+    val lockKey = s"$userName/$repoName/auth"
+    if (authenticatorLockEnabled) {
+      LockUtil.lock(lockKey) {
+        doAuthenticate(userName, repoName, action)
+      }
+    } else {
+      doAuthenticate(userName, repoName, action)
+    }
+  }
+
+  private def doAuthenticate(userName: String, repoName: String, action: RepositoryInfo => Any) = {
     getRepository(userName, repoName).map { repository =>
       if (isReadable(repository.repository, context.loginAccount) || !repository.repository.isPrivate) {
         action(repository)

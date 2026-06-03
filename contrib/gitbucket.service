@@ -1,0 +1,17 @@
+[Unit]
+Description=GitBucket GitHub clone written with Scala
+After=network.target
+
+[Service]
+Type=simple
+User=gitbucket
+Group=gitbucket
+EnvironmentFile=-/etc/sysconfig/gitbucket
+Environment=GITBUCKET_HOME=/var/lib/gitbucket
+WorkingDirectory=/var/lib/gitbucket
+ExecStart=/usr/bin/java $GITBUCKET_JVM_OPTS -jar /usr/share/gitbucket/lib/gitbucket.war $GITBUCKET_OPTS
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

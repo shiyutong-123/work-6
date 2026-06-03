@@ -107,7 +107,8 @@ assembly / assemblyMergeStrategy := {
   case PathList("META-INF", xs @ _*) =>
     xs.map(_.toLowerCase) match {
       case ("manifest.mf" :: Nil) => MergeStrategy.discard
-      case _                      => MergeStrategy.discard
+      case ("services", service @ _*) => MergeStrategy.concat
+      case _ => MergeStrategy.discard
     }
   case x => MergeStrategy.first
 }

@@ -196,6 +196,8 @@ object PluginRegistry {
   private var watcher: PluginWatchThread = null
   private var extraWatcher: PluginWatchThread = null
 
+  private val pluginLoader = new PluginLoader()
+
   /**
    * Returns the PluginRegistry singleton instance.
    */
@@ -205,9 +207,12 @@ object PluginRegistry {
    * Reload all plugins.
    */
   def reload(context: ServletContext, settings: SystemSettings, conn: java.sql.Connection): Unit = synchronized {
+    logger.info("Reloading plugins...")
     shutdown(context, settings)
+    pluginLoader.clearCache()
     instance = new PluginRegistry()
     initialize(context, settings, conn)
+    logger.info("Plugins reloaded successfully")
   }
 
   /**
@@ -221,21 +226,14 @@ object PluginRegistry {
         .listFiles((_: File, name: String) => {
           name.startsWith(s"gitbucket-${pluginId}-plugin") && name.endsWith(".jar")
         })
-        .foreach(_.delete())
+        .foreach { jar =>
+          pluginLoader.clearCacheForPlugin(jar)
+          jar.delete()
+        }
 
       instance = new PluginRegistry()
       initialize(context, settings, conn)
     }
-
-  private def listPluginJars(dir: File): Seq[File] = {
-    dir
-      .listFiles(new FilenameFilter {
-        override def accept(dir: File, name: String): Boolean = name.endsWith(".jar")
-      })
-      .toSeq
-      .sortBy(x => Version.parse(getPluginVersion(x.getName)))
-      .reverse
-  }
 
   private lazy val extraPluginDir: Option[String] = ConfigUtil.getConfigValue[String]("gitbucket.pluginDir")
 
@@ -247,97 +245,85 @@ object PluginRegistry {
     }
   }
 
-  private def getPluginVersion(pluginJarFileName: String): String = {
-    val regex = ".+-((\\d+)\\.(\\d+)(\\.(\\d+))?(-SNAPSHOT)?)\\.jar$".r
-    pluginJarFileName match {
-      case regex(all, major, minor, _, patch, modifier) =>
-        if (patch != null) {
-          all
-        } else {
-          s"${major}.${minor}.0" + (if (modifier == null) "" else modifier)
-        }
-      case _ => "0.0.0"
-    }
-  }
-
   /**
-   * Initializes all installed plugins.
+   * Initializes all installed plugins using PluginLoader with ServiceLoader.
    */
   def initialize(context: ServletContext, settings: SystemSettings, conn: java.sql.Connection): Unit = synchronized {
     val pluginDir = new File(PluginHome)
     val manager = new JDBCVersionManager(conn)
 
-    // Clean installed directory
+    val pluginDirs = Seq(pluginDir) ++ extraPluginDir.map(new File(_)).toSeq
+    val validPluginDirs = pluginDirs.filter(dir => dir.exists() && dir.isDirectory)
+
+    // Initialize installed directory
     val installedDir = new File(PluginHome, ".installed")
     if (installedDir.exists) {
       FileUtils.deleteDirectory(installedDir)
     }
     installedDir.mkdirs()
 
-    val pluginJars = listPluginJars(pluginDir)
+    val loadedPlugins = pluginLoader.loadPlugins(
+      validPluginDirs,
+      installedDir,
+      Thread.currentThread.getContextClassLoader
+    )
 
-    val extraJars = extraPluginDir
-      .map { extraDir =>
-        listPluginJars(new File(extraDir))
-      }
-      .getOrElse(Nil)
+    loadedPlugins.foreach { loadedPlugin =>
+      val plugin = loadedPlugin.plugin
+      val pluginId = plugin.pluginId
+      val pluginJar = loadedPlugin.pluginJar
+      val classLoader = loadedPlugin.classLoader
 
-    (extraJars ++ pluginJars).foreach { pluginJar =>
-      val installedJar = new File(installedDir, pluginJar.getName)
-
-      FileUtils.copyFile(pluginJar, installedJar)
-      logger.info(s"Initialize ${pluginJar.getName}")
-      val classLoader =
-        new URLClassLoader(Array(installedJar.toURI.toURL), Thread.currentThread.getContextClassLoader)
-      try {
-        val plugin = classLoader.loadClass("Plugin").getDeclaredConstructor().newInstance().asInstanceOf[Plugin]
-        val pluginId = plugin.pluginId
-
-        // Check duplication
-        instance.getPlugins().find(_.pluginId == pluginId) match {
-          case Some(x) =>
-            logger.warn(s"Plugin ${pluginId} is duplicated. ${x.pluginJar.getName} is available.")
+      // Check duplication
+      instance.getPlugins().find(_.pluginId == pluginId) match {
+        case Some(existing) =>
+          logger.warn(s"Plugin ${pluginId} is duplicated. ${existing.pluginJar.getName} is available.")
+          if (!loadedPlugin.isCached) {
             classLoader.close()
-          case None =>
-            // Migration
-            val solidbase = new Solidbase()
-            solidbase
-              .migrate(
+          }
+        case None =>
+          logger.info(s"Initializing ${if (loadedPlugin.isCached) "cached " else ""}plugin: ${pluginJar.getName}")
+          try {
+            if (!loadedPlugin.isCached) {
+              val solidbase = new Solidbase()
+              solidbase.migrate(
                 conn,
                 classLoader,
                 DatabaseConfig.liquiDriver,
                 new Module(plugin.pluginId, plugin.versions*)
               )
-            conn.commit()
+              conn.commit()
 
-            // Check database version
-            val databaseVersion = manager.getCurrentVersion(plugin.pluginId)
-            val pluginVersion = plugin.versions.last.getVersion
-            if (databaseVersion != pluginVersion) {
-              throw new IllegalStateException(
-                s"Plugin version is ${pluginVersion}, but database version is ${databaseVersion}"
-              )
+              val databaseVersion = manager.getCurrentVersion(plugin.pluginId)
+              val pluginVersion = plugin.versions.last.getVersion
+              if (databaseVersion != pluginVersion) {
+                throw new IllegalStateException(
+                  s"Plugin version is ${pluginVersion}, but database version is ${databaseVersion}"
+                )
+              }
             }
 
-            // Initialize
             plugin.initialize(instance, context, settings)
             instance.addPlugin(
               PluginInfo(
                 pluginId = plugin.pluginId,
                 pluginName = plugin.pluginName,
                 pluginVersion = plugin.versions.last.getVersion,
-                gitbucketVersion = getGitBucketVersion(installedJar.getName),
+                gitbucketVersion = getGitBucketVersion(pluginJar.getName),
                 description = plugin.description,
                 pluginClass = plugin,
                 pluginJar = pluginJar,
                 classLoader = classLoader
               )
             )
-        }
-      } catch {
-        case e: Throwable =>
-          logger.error(s"Error during plugin initialization: ${pluginJar.getName}", e)
-          classLoader.close()
+          } catch {
+            case e: Throwable =>
+              logger.error(s"Error during plugin initialization: ${pluginJar.getName}", e)
+              if (!loadedPlugin.isCached) {
+                classLoader.close()
+              }
+              pluginLoader.clearCacheForPlugin(pluginJar)
+          }
       }
     }
 
@@ -369,8 +355,6 @@ object PluginRegistry {
       } catch {
         case e: Exception =>
           logger.error(s"Error during plugin shutdown: ${plugin.pluginJar.getName}", e)
-      } finally {
-        plugin.classLoader.close()
       }
     }
   }

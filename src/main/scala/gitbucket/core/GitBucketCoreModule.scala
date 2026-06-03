@@ -1,10 +1,12 @@
 package gitbucket.core
 
-import java.io.FileOutputStream
+import java.io.{File, FileOutputStream}
+import java.net.{URL, URLClassLoader}
 import java.nio.charset.StandardCharsets
 import java.sql.Connection
-import java.util.UUID
+import java.util.{ServiceLoader, UUID}
 import gitbucket.core.model.Activity
+import gitbucket.core.plugin.Plugin
 import gitbucket.core.util.Directory.ActivityLog
 import gitbucket.core.util.JDBCUtil
 import io.github.gitbucket.solidbase.Solidbase
@@ -127,4 +129,55 @@ object GitBucketCoreModule
       new Version("4.46.1")
     ) {
   java.util.logging.Logger.getLogger("liquibase").setLevel(Level.SEVERE)
+}
+
+/**
+ * Utility for scanning and loading Plugin implementations from classpath
+ * using Java ServiceLoader for dynamic plugin discovery.
+ */
+object PluginLoader {
+
+  import scala.jdk.CollectionConverters._
+
+  /**
+   * Scans the classpath for all Plugin implementations using ServiceLoader.
+   * Plugins must declare their implementation in META-INF/services/gitbucket.core.plugin.Plugin.
+   */
+  def scanClasspath(): Seq[Plugin] = {
+    val classLoader = Thread.currentThread.getContextClassLoader
+    ServiceLoader.load(classOf[Plugin], classLoader).asScala.toSeq
+  }
+
+  /**
+   * Scans a specific JAR file for Plugin implementations using ServiceLoader.
+   */
+  def scanJar(jarFile: File): Seq[Plugin] = {
+    val classLoader = new URLClassLoader(Array(jarFile.toURI.toURL), classOf[Plugin].getClassLoader)
+    try {
+      val plugins = ServiceLoader.load(classOf[Plugin], classLoader).asScala.toSeq
+      if (plugins.isEmpty) {
+        try {
+          val plugin = classLoader.loadClass("Plugin").getDeclaredConstructor().newInstance().asInstanceOf[Plugin]
+          Seq(plugin)
+        } catch {
+          case _: ClassNotFoundException => Seq.empty
+        }
+      } else {
+        plugins
+      }
+    } finally {
+    }
+  }
+
+  /**
+   * Scans a directory for JAR files and discovers Plugin implementations.
+   */
+  def scanDirectory(dir: File): Seq[Plugin] = {
+    if (!dir.exists || !dir.isDirectory) return Seq.empty
+
+    dir
+      .listFiles((_: File, name: String) => name.endsWith(".jar"))
+      .toSeq
+      .flatMap(scanJar)
+  }
 }

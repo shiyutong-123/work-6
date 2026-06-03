@@ -107,6 +107,7 @@ assembly / assemblyMergeStrategy := {
   case PathList("META-INF", xs @ _*) =>
     xs.map(_.toLowerCase) match {
       case ("manifest.mf" :: Nil) => MergeStrategy.discard
+      case ("services" :: _)      => MergeStrategy.concat
       case _                      => MergeStrategy.discard
     }
   case x => MergeStrategy.first
@@ -118,6 +119,20 @@ signedArtifacts := {
     file.getName.endsWith(".war") || file.getName.endsWith(".war.asc")
   }
 }
+
+// Plugin packaging configuration for ServiceLoader-based discovery.
+// Plugin projects should include the following in their build.sbt:
+//
+//   Compile / resourceGenerators += Def.task {
+//     val serviceDir = (Compile / resourceManaged).value / "META-INF" / "services"
+//     IO.createDirectory(serviceDir)
+//     val serviceFile = serviceDir / "gitbucket.core.plugin.Plugin"
+//     IO.write(serviceFile, "com.example.MyPlugin\n")
+//     Seq(serviceFile)
+//   }.taskValue
+//
+// This generates META-INF/services/gitbucket.core.plugin.Plugin in the plugin JAR,
+// enabling ServiceLoader-based discovery by GitBucket.
 
 // Create executable war file
 val ExecutableConfig = config("executable").hide

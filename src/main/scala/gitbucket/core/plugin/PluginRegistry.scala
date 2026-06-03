@@ -3,7 +3,7 @@ package gitbucket.core.plugin
 import java.io.{File, FilenameFilter}
 import java.net.URLClassLoader
 import java.nio.file.{Files, Paths, StandardWatchEventKinds}
-import java.util.Base64
+import java.util.{Base64, ServiceLoader}
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.ConcurrentHashMap
 import javax.servlet.ServletContext
@@ -196,6 +196,8 @@ object PluginRegistry {
   private var watcher: PluginWatchThread = null
   private var extraWatcher: PluginWatchThread = null
 
+  private val pluginCache = new ConcurrentHashMap[String, Long]()
+
   /**
    * Returns the PluginRegistry singleton instance.
    */
@@ -211,17 +213,152 @@ object PluginRegistry {
   }
 
   /**
+   * Incrementally reload only changed plugins, using the cache to skip unchanged ones.
+   */
+  def incrementalReload(context: ServletContext, settings: SystemSettings, conn: java.sql.Connection): Unit =
+    synchronized {
+      val pluginDir = new File(PluginHome)
+      val manager = new JDBCVersionManager(conn)
+
+      val installedDir = new File(PluginHome, ".installed")
+      if (!installedDir.exists) {
+        installedDir.mkdirs()
+      }
+
+      val pluginJars = listPluginJars(pluginDir)
+      val extraJars = extraPluginDir
+        .map { extraDir => listPluginJars(new File(extraDir)) }
+        .getOrElse(Nil)
+
+      val allJars = extraJars ++ pluginJars
+      val currentJarPaths = allJars.map(_.getAbsolutePath).toSet
+
+      val removedKeys = pluginCache.keys().asScala.filterNot(key => currentJarPaths.contains(key)).toSet
+      if (removedKeys.nonEmpty) {
+        logger.info(s"Detected removed plugins: ${removedKeys.mkString(", ")}. Performing full reload.")
+        removedKeys.foreach(pluginCache.remove)
+        reload(context, settings, conn)
+        return
+      }
+
+      val changed = allJars.filter { jar =>
+        val cacheKey = jar.getAbsolutePath
+        !pluginCache.containsKey(cacheKey) || pluginCache.get(cacheKey) != jar.lastModified()
+      }
+
+      if (changed.nonEmpty) {
+        logger.info(s"Detected ${changed.size} changed plugin(s), performing incremental reload")
+        changed.foreach { jar =>
+          val installedJar = new File(installedDir, jar.getName)
+          FileUtils.copyFile(jar, installedJar)
+          loadAndRegisterPluginJar(installedJar, jar, manager, conn, context, settings)
+        }
+      }
+    }
+
+  private def loadAndRegisterPluginJar(
+    installedJar: File,
+    originalJar: File,
+    manager: JDBCVersionManager,
+    conn: java.sql.Connection,
+    context: ServletContext,
+    settings: SystemSettings
+  ): Unit = {
+    val classLoader =
+      new URLClassLoader(Array(installedJar.toURI.toURL), Thread.currentThread.getContextClassLoader)
+    try {
+      val plugins = ServiceLoader.load(classOf[Plugin], classLoader).asScala.toList
+
+      if (plugins.isEmpty) {
+        try {
+          val plugin = classLoader.loadClass("Plugin").getDeclaredConstructor().newInstance().asInstanceOf[Plugin]
+          registerSinglePlugin(plugin, originalJar, installedJar, classLoader, manager, conn, context, settings)
+        } catch {
+          case _: ClassNotFoundException =>
+            logger.warn(s"No Plugin implementation found in ${installedJar.getName} via ServiceLoader or class name 'Plugin'")
+            classLoader.close()
+        }
+      } else {
+        plugins.foreach { plugin =>
+          registerSinglePlugin(plugin, originalJar, installedJar, classLoader, manager, conn, context, settings)
+        }
+      }
+    } catch {
+      case e: Throwable =>
+        logger.error(s"Error during plugin initialization: ${installedJar.getName}", e)
+        classLoader.close()
+    }
+  }
+
+  private def registerSinglePlugin(
+    plugin: Plugin,
+    originalJar: File,
+    installedJar: File,
+    classLoader: URLClassLoader,
+    manager: JDBCVersionManager,
+    conn: java.sql.Connection,
+    context: ServletContext,
+    settings: SystemSettings
+  ): Unit = {
+    val pluginId = plugin.pluginId
+
+    instance.getPlugins().find(_.pluginId == pluginId) match {
+      case Some(x) =>
+        logger.warn(s"Plugin ${pluginId} is duplicated. ${x.pluginJar.getName} is available.")
+        classLoader.close()
+      case None =>
+        val solidbase = new Solidbase()
+        solidbase
+          .migrate(
+            conn,
+            classLoader,
+            DatabaseConfig.liquiDriver,
+            new Module(plugin.pluginId, plugin.versions*)
+          )
+        conn.commit()
+
+        val databaseVersion = manager.getCurrentVersion(plugin.pluginId)
+        val pluginVersion = plugin.versions.last.getVersion
+        if (databaseVersion != pluginVersion) {
+          throw new IllegalStateException(
+            s"Plugin version is ${pluginVersion}, but database version is ${databaseVersion}"
+          )
+        }
+
+        plugin.initialize(instance, context, settings)
+        instance.addPlugin(
+          PluginInfo(
+            pluginId = plugin.pluginId,
+            pluginName = plugin.pluginName,
+            pluginVersion = plugin.versions.last.getVersion,
+            gitbucketVersion = getGitBucketVersion(installedJar.getName),
+            description = plugin.description,
+            pluginClass = plugin,
+            pluginJar = originalJar,
+            classLoader = classLoader
+          )
+        )
+
+        pluginCache.put(originalJar.getAbsolutePath, originalJar.lastModified())
+        logger.info(s"Plugin ${plugin.pluginId} loaded and cached: ${originalJar.getName}")
+    }
+  }
+
+  /**
    * Uninstall a specified plugin.
    */
   def uninstall(pluginId: String, context: ServletContext, settings: SystemSettings, conn: java.sql.Connection): Unit =
     synchronized {
       shutdown(context, settings)
 
-      new File(PluginHome)
+      val removed = new File(PluginHome)
         .listFiles((_: File, name: String) => {
           name.startsWith(s"gitbucket-${pluginId}-plugin") && name.endsWith(".jar")
         })
-        .foreach(_.delete())
+        .foreach { f =>
+          pluginCache.remove(f.getAbsolutePath)
+          f.delete()
+        }
 
       instance = new PluginRegistry()
       initialize(context, settings, conn)
@@ -261,13 +398,12 @@ object PluginRegistry {
   }
 
   /**
-   * Initializes all installed plugins.
+   * Initializes all installed plugins using ServiceLoader for dynamic discovery.
    */
   def initialize(context: ServletContext, settings: SystemSettings, conn: java.sql.Connection): Unit = synchronized {
     val pluginDir = new File(PluginHome)
     val manager = new JDBCVersionManager(conn)
 
-    // Clean installed directory
     val installedDir = new File(PluginHome, ".installed")
     if (installedDir.exists) {
       FileUtils.deleteDirectory(installedDir)
@@ -287,58 +423,7 @@ object PluginRegistry {
 
       FileUtils.copyFile(pluginJar, installedJar)
       logger.info(s"Initialize ${pluginJar.getName}")
-      val classLoader =
-        new URLClassLoader(Array(installedJar.toURI.toURL), Thread.currentThread.getContextClassLoader)
-      try {
-        val plugin = classLoader.loadClass("Plugin").getDeclaredConstructor().newInstance().asInstanceOf[Plugin]
-        val pluginId = plugin.pluginId
-
-        // Check duplication
-        instance.getPlugins().find(_.pluginId == pluginId) match {
-          case Some(x) =>
-            logger.warn(s"Plugin ${pluginId} is duplicated. ${x.pluginJar.getName} is available.")
-            classLoader.close()
-          case None =>
-            // Migration
-            val solidbase = new Solidbase()
-            solidbase
-              .migrate(
-                conn,
-                classLoader,
-                DatabaseConfig.liquiDriver,
-                new Module(plugin.pluginId, plugin.versions*)
-              )
-            conn.commit()
-
-            // Check database version
-            val databaseVersion = manager.getCurrentVersion(plugin.pluginId)
-            val pluginVersion = plugin.versions.last.getVersion
-            if (databaseVersion != pluginVersion) {
-              throw new IllegalStateException(
-                s"Plugin version is ${pluginVersion}, but database version is ${databaseVersion}"
-              )
-            }
-
-            // Initialize
-            plugin.initialize(instance, context, settings)
-            instance.addPlugin(
-              PluginInfo(
-                pluginId = plugin.pluginId,
-                pluginName = plugin.pluginName,
-                pluginVersion = plugin.versions.last.getVersion,
-                gitbucketVersion = getGitBucketVersion(installedJar.getName),
-                description = plugin.description,
-                pluginClass = plugin,
-                pluginJar = pluginJar,
-                classLoader = classLoader
-              )
-            )
-        }
-      } catch {
-        case e: Throwable =>
-          logger.error(s"Error during plugin initialization: ${pluginJar.getName}", e)
-          classLoader.close()
-      }
+      loadAndRegisterPluginJar(installedJar, pluginJar, manager, conn, context, settings)
     }
 
     if (watcher == null) {
@@ -358,20 +443,21 @@ object PluginRegistry {
     instance.getPlugins().foreach { plugin =>
       try {
         plugin.pluginClass.shutdown(instance, context, settings)
-        if (watcher != null) {
-          watcher.interrupt()
-          watcher = null
-        }
-        if (extraWatcher != null) {
-          extraWatcher.interrupt()
-          extraWatcher = null
-        }
+        pluginCache.remove(plugin.pluginJar.getAbsolutePath)
       } catch {
         case e: Exception =>
           logger.error(s"Error during plugin shutdown: ${plugin.pluginJar.getName}", e)
       } finally {
         plugin.classLoader.close()
       }
+    }
+    if (watcher != null) {
+      watcher.interrupt()
+      watcher = null
+    }
+    if (extraWatcher != null) {
+      extraWatcher.interrupt()
+      extraWatcher = null
     }
   }
 
@@ -446,9 +532,9 @@ class PluginWatchThread(context: ServletContext, dir: String) extends Thread wit
           new Thread {
             override def run(): Unit = {
               gitbucket.core.servlet.Database() withTransaction { session =>
-                logger.info("Reloading plugins...")
-                PluginRegistry.reload(context, loadSystemSettings(), session.conn)
-                logger.info("Reloading finished.")
+                logger.info("Checking plugins for incremental reload...")
+                PluginRegistry.incrementalReload(context, loadSystemSettings(), session.conn)
+                logger.info("Plugin check finished.")
               }
             }
           }.start()

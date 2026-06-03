@@ -5,10 +5,11 @@ require {
 	type tomcat_t;
 	type tomcat_var_lib_t;
 	type unreserved_port_t;
+	type var_lib_t;
 
-	class file { execute };
-	class tcp_socket { name_bind };
-	class tcp_socket { name_connect };
+	class file { append create execute getattr open read rename unlink write };
+	class dir { add_name create getattr open read remove search write };
+	class tcp_socket { name_bind name_connect };
 }
 
 # allow tomcat to send emails
@@ -19,3 +20,7 @@ allow tomcat_t tomcat_var_lib_t:file { execute };
 
 # allow tomcat to serve repositories via SSH
 allow tomcat_t unreserved_port_t:tcp_socket { name_bind };
+
+# allow tomcat to access /var/lib/gitbucket
+allow tomcat_t var_lib_t:dir { add_name create getattr open read remove search write };
+allow tomcat_t var_lib_t:file { append create getattr open read rename unlink write };

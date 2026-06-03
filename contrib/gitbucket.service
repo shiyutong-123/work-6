@@ -1,0 +1,20 @@
+[Unit]
+Description=GitBucket Service
+After=syslog.target
+After=network.target
+
+[Service]
+User=gitbucket
+Group=gitbucket
+Environment="GITBUCKET_HOME=/var/lib/gitbucket"
+Environment="GITBUCKET_PORT=8080"
+Environment="GITBUCKET_HOST=0.0.0.0"
+Environment="GITBUCKET_PREFIX="
+Environment="GITBUCKET_JVM_OPTS=-Dmail.smtp.starttls.enable=true"
+EnvironmentFile=-/etc/default/gitbucket
+ExecStart=/usr/bin/java $GITBUCKET_JVM_OPTS -jar /usr/share/gitbucket/lib/gitbucket.war --port=${GITBUCKET_PORT} --host=${GITBUCKET_HOST} --prefix=${GITBUCKET_PREFIX} --gitbucket.home=${GITBUCKET_HOME}
+SuccessExitStatus=143
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

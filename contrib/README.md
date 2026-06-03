@@ -1,13 +1,11 @@
 # Contrib Notes #
 
-The configuration script adapts according to the OS.
-The `linux` directory contains scripts for Ubuntu and RedHat.
-The Mac scripts have been folded in as well.
-Common scripts are in this directory.
+This directory contains a unified systemd service unit file for GitBucket.
+The `linux` directory contains SELinux policies for RedHat-based systems.
 
-This version of scripts has so far only been tested on Ubuntu and Mac. Someone else will have to test on RedHat.
+To install GitBucket as a systemd service:
 
-To run:
-
-  1. Edit `gitbucket.conf` to suit.
-  2. Type: `install`
+  1. Copy `gitbucket.service` to `/etc/systemd/system/gitbucket.service`.
+  2. Edit the environment variables in the service file or create `/etc/default/gitbucket` to suit your environment.
+  3. Run `systemctl daemon-reload`.
+  4. Run `systemctl enable --now gitbucket.service`.

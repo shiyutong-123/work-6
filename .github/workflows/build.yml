@@ -40,3 +40,12 @@ jobs:
       with:
         name: gitbucket-java${{ matrix.java }}-${{ github.sha }}
         path: ./target/executable/gitbucket.*
+
+  selinux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - name: Install checkpolicy
+      run: sudo apt-get update && sudo apt-get install -y checkpolicy
+    - name: Validate SELinux policy
+      run: checkmodule -M -m -o gitbucket.mod contrib/linux/redhat/selinux/gitbucket.te

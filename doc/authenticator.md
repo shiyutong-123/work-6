@@ -58,3 +58,9 @@ Currently, GitBucket provides below authenticators:
 |GroupManagerAuthenticator |managersOnly     |Allows only the group managers.                                                       |
 
 Of course, if you make a new plugin, you can implement your own authenticator according to requirement in your plugin.
+
+## Authenticator Lock
+
+In high concurrency scenarios, you may encounter race conditions in authenticators. To prevent this, GitBucket provides an optional lock mechanism. You can enable it by setting `authenticator_lock_enabled=true` in gitbucket.conf.
+
+When enabled, all authenticators will use a shared lock to ensure that only one authentication process runs at a time.

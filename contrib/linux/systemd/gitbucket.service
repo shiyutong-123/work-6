@@ -1,0 +1,25 @@
+[Unit]
+Description=GitBucket - The easily installable GitHub clone
+Documentation=https://github.com/gitbucket/gitbucket
+After=network.target
+
+[Service]
+Type=simple
+User=gitbucket
+Group=gitbucket
+WorkingDirectory=/var/lib/gitbucket
+Environment=GITBUCKET_HOME=/var/lib/gitbucket
+Environment=GITBUCKET_LOG_DIR=/var/log/gitbucket
+EnvironmentFile=-/etc/sysconfig/gitbucket
+EnvironmentFile=-/etc/default/gitbucket
+ExecStart=/usr/bin/java ${GITBUCKET_JVM_OPTS} -jar /usr/share/gitbucket/lib/gitbucket.war --host=${GITBUCKET_HOST:-0.0.0.0} --port=${GITBUCKET_PORT:-8080} --prefix=${GITBUCKET_PREFIX:-}
+ExecStop=/bin/kill -TERM $MAINPID
+StandardOutput=append:/var/log/gitbucket/run.log
+StandardError=append:/var/log/gitbucket/run.log
+Restart=on-failure
+RestartSec=10
+SuccessExitStatus=143
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

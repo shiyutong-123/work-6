@@ -1,0 +1,49 @@
+diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
+index 1ef66e5b..49fb4970 100644
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -40,3 +40,12 @@ jobs:
+       with:
+         name: gitbucket-java${{ matrix.java }}-${{ github.sha }}
+         path: ./target/executable/gitbucket.*
++
++  selinux-policy-check:
++    runs-on: ubuntu-latest
++    steps:
++    - uses: actions/checkout@v6
++    - name: Install SELinux policy tools
++      run: sudo apt-get update && sudo apt-get install -y checkpolicy
++    - name: Validate SELinux policy syntax
++      run: checkmodule -M -m -o /dev/null contrib/linux/redhat/selinux/gitbucket.te
+diff --git a/contrib/linux/redhat/selinux/gitbucket.te b/contrib/linux/redhat/selinux/gitbucket.te
+index da3a5748..546ef419 100644
+--- a/contrib/linux/redhat/selinux/gitbucket.te
++++ b/contrib/linux/redhat/selinux/gitbucket.te
+@@ -1,4 +1,4 @@
+-module gitbucket 1.0;
++module gitbucket 1.1;
+ 
+ require {
+ 	type smtp_port_t;
+@@ -6,7 +6,8 @@ require {
+ 	type tomcat_var_lib_t;
+ 	type unreserved_port_t;
+ 
+-	class file { execute };
++	class file { execute execute_no_trans getattr ioctl lock open read write create unlink rename link setattr append };
++	class dir { add_name create getattr ioctl lock open read remove_name rename rmdir search setattr write };
+ 	class tcp_socket { name_bind };
+ 	class tcp_socket { name_connect };
+ }
+@@ -14,8 +15,9 @@ require {
+ # allow tomcat to send emails
+ allow tomcat_t smtp_port_t:tcp_socket { name_connect };
+ 
+-# allow file executes, required during repo creation
+-allow tomcat_t tomcat_var_lib_t:file { execute };
++# allow tomcat to manage files and directories in /var/lib/gitbucket
++allow tomcat_t tomcat_var_lib_t:file { execute execute_no_trans getattr ioctl lock open read write create unlink rename link setattr append };
++allow tomcat_t tomcat_var_lib_t:dir { add_name create getattr ioctl lock open read remove_name rename rmdir search setattr write };
+ 
+ # allow tomcat to serve repositories via SSH
+ allow tomcat_t unreserved_port_t:tcp_socket { name_bind };

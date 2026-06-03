@@ -544,7 +544,8 @@ trait RepositoryService {
     allowFork: Boolean,
     mergeOptions: Seq[String],
     defaultMergeOption: String,
-    safeMode: Boolean
+    safeMode: Boolean,
+    enableIssueComment: Boolean
   )(implicit s: Session): Unit = {
 
     Repositories
@@ -561,6 +562,7 @@ trait RepositoryService {
           r.mergeOptions,
           r.defaultMergeOption,
           r.safeMode,
+          r.enableIssueComment,
           r.updatedDate
         )
       }
@@ -575,6 +577,7 @@ trait RepositoryService {
         mergeOptions.mkString(","),
         defaultMergeOption,
         safeMode,
+        enableIssueComment,
         currentDate
       )
   }

@@ -25,6 +25,7 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
     val mergeOptions = column[String]("MERGE_OPTIONS")
     val defaultMergeOption = column[String]("DEFAULT_MERGE_OPTION")
     val safeMode = column[Boolean]("SAFE_MODE")
+    val enableIssueComment = column[Boolean]("ENABLE_ISSUE_COMMENT")
 
     def * =
       (
@@ -50,7 +51,8 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
           allowFork,
           mergeOptions,
           defaultMergeOption,
-          safeMode
+          safeMode,
+          enableIssueComment
         )
       ).shaped.<>(
         { case (repository, options) =>
@@ -123,5 +125,6 @@ case class RepositoryOptions(
   allowFork: Boolean,
   mergeOptions: String,
   defaultMergeOption: String,
-  safeMode: Boolean
+  safeMode: Boolean,
+  enableIssueComment: Boolean
 )

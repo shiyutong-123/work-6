@@ -51,7 +51,8 @@ trait RepositorySettingsControllerBase extends ControllerBase {
     allowFork: Boolean,
     mergeOptions: Seq[String],
     defaultMergeOption: String,
-    safeMode: Boolean
+    safeMode: Boolean,
+    enableIssueComment: Boolean
   )
 
   private val optionsForm = mapping(
@@ -64,7 +65,8 @@ trait RepositorySettingsControllerBase extends ControllerBase {
     "allowFork" -> trim(label("Allow Forking", boolean())),
     "mergeOptions" -> mergeOptions,
     "defaultMergeOption" -> trim(label("Default merge strategy", text(required))),
-    "safeMode" -> trim(label("XSS protection", boolean()))
+    "safeMode" -> trim(label("XSS protection", boolean())),
+    "enableIssueComment" -> trim(label("Enable Issue Comment", boolean()))
   )(OptionsForm.apply).verifying { form =>
     if (!form.mergeOptions.contains(form.defaultMergeOption)) {
       Seq("defaultMergeOption" -> s"This merge strategy isn't enabled.")
@@ -168,7 +170,8 @@ trait RepositorySettingsControllerBase extends ControllerBase {
       form.allowFork,
       form.mergeOptions,
       form.defaultMergeOption,
-      form.safeMode
+      form.safeMode,
+      form.enableIssueComment
     )
     flash.update("info", "Repository settings has been updated.")
     redirect(s"/${repository.owner}/${repository.name}/settings/options")

@@ -1,0 +1,238 @@
+diff --git a/src/main/scala/gitbucket/core/GitBucketCoreModule.scala b/src/main/scala/gitbucket/core/GitBucketCoreModule.scala
+index ff4b726d..fab62f38 100644
+--- a/src/main/scala/gitbucket/core/GitBucketCoreModule.scala
++++ b/src/main/scala/gitbucket/core/GitBucketCoreModule.scala
+@@ -124,7 +124,8 @@ object GitBucketCoreModule
+       new Version("4.44.0", new LiquibaseMigration("update/gitbucket-core_4.44.xml")),
+       new Version("4.45.0"),
+       new Version("4.46.0", new LiquibaseMigration("update/gitbucket-core_4.46.xml")),
+-      new Version("4.46.1")
++      new Version("4.46.1"),
++      new Version("4.47.0", new LiquibaseMigration("update/gitbucket-core_4.47.xml"))
+     ) {
+   java.util.logging.Logger.getLogger("liquibase").setLevel(Level.SEVERE)
+ }
+diff --git a/src/main/scala/gitbucket/core/controller/IssuesController.scala b/src/main/scala/gitbucket/core/controller/IssuesController.scala
+index 788227fc..84860772 100644
+--- a/src/main/scala/gitbucket/core/controller/IssuesController.scala
++++ b/src/main/scala/gitbucket/core/controller/IssuesController.scala
+@@ -211,52 +211,59 @@ trait IssuesControllerBase extends ControllerBase {
+ 
+   post("/:owner/:repository/issue_comments/new", commentForm)(readableUsersOnly { (form, repository) =>
+     context.withLoginAccount { loginAccount =>
+-      getIssue(repository.owner, repository.name, form.issueId.toString).flatMap { issue =>
+-        val actionOpt =
+-          params
+-            .get("action")
+-            .filter(_ => isEditableContent(issue.userName, issue.repositoryName, issue.openedUserName, loginAccount))
+-        handleComment(issue, Some(form.content), repository, actionOpt) map { case (issue, id) =>
+-          redirect(
+-            s"/${repository.owner}/${repository.name}/${if (issue.isPullRequest) "pull" else "issues"}/${form.issueId}#comment-$id"
+-          )
+-        }
+-      } getOrElse NotFound()
++      if (isIssueCommentEnabled(repository.owner, repository.name)) {
++        getIssue(repository.owner, repository.name, form.issueId.toString).flatMap { issue =>
++          val actionOpt =
++            params
++              .get("action")
++              .filter(_ => isEditableContent(issue.userName, issue.repositoryName, issue.openedUserName, loginAccount))
++          handleComment(issue, Some(form.content), repository, actionOpt) map { case (issue, id) =>
++            redirect(
++              s"/${repository.owner}/${repository.name}/${if (issue.isPullRequest) "pull" else "issues"}/${form.issueId}#comment-$id"
++            )
++          }
++        } getOrElse NotFound()
++      } else Forbidden()
+     }
+   })
+ 
+   post("/:owner/:repository/issue_comments/state", issueStateForm)(readableUsersOnly { (form, repository) =>
+     context.withLoginAccount { loginAccount =>
+-      getIssue(repository.owner, repository.name, form.issueId.toString).flatMap { issue =>
+-        val actionOpt =
+-          params
+-            .get("action")
+-            .filter(_ => isEditableContent(issue.userName, issue.repositoryName, issue.openedUserName, loginAccount))
+-        handleComment(issue, form.content, repository, actionOpt) map { case (issue, id) =>
+-          redirect(
+-            s"/${repository.owner}/${repository.name}/${if (issue.isPullRequest) "pull" else "issues"}/${form.issueId}#comment-$id"
+-          )
+-        }
+-      } getOrElse NotFound()
++      if (isIssueCommentEnabled(repository.owner, repository.name)) {
++        getIssue(repository.owner, repository.name, form.issueId.toString).flatMap { issue =>
++          val actionOpt =
++            params
++              .get("action")
++              .filter(_ => isEditableContent(issue.userName, issue.repositoryName, issue.openedUserName, loginAccount))
++          handleComment(issue, form.content, repository, actionOpt) map { case (issue, id) =>
++            redirect(
++              s"/${repository.owner}/${repository.name}/${if (issue.isPullRequest) "pull" else "issues"}/${form.issueId}#comment-$id"
++            )
++          }
++        } getOrElse NotFound()
++      } else Forbidden()
+     }
+   })
+ 
+   ajaxPost("/:owner/:repository/issue_comments/edit/:id", commentForm)(readableUsersOnly { (form, repository) =>
+     context.withLoginAccount { loginAccount =>
+-      getComment(repository.owner, repository.name, params("id")).map { comment =>
+-        if (isEditableContent(repository.owner, repository.name, comment.commentedUserName, loginAccount)) {
+-          updateComment(repository.owner, repository.name, comment.issueId, comment.commentId, form.content)
+-          redirect(s"/${repository.owner}/${repository.name}/issue_comments/_data/${comment.commentId}")
+-        } else Unauthorized()
+-      } getOrElse NotFound()
++      if (isIssueCommentEnabled(repository.owner, repository.name)) {
++        getComment(repository.owner, repository.name, params("id")).map { comment =>
++          if (isEditableContent(repository.owner, repository.name, comment.commentedUserName, loginAccount)) {
++            updateComment(repository.owner, repository.name, comment.issueId, comment.commentId, form.content)
++            redirect(s"/${repository.owner}/${repository.name}/issue_comments/_data/${comment.commentId}")
++          } else Unauthorized()
++        } getOrElse NotFound()
++      } else Forbidden()
+     }
+   })
+ 
+   ajaxPost("/:owner/:repository/issue_comments/delete/:id")(readableUsersOnly { repository =>
+     context.withLoginAccount { loginAccount =>
+-      getComment(repository.owner, repository.name, params("id")).map { comment =>
+-        if (isDeletableComment(repository.owner, repository.name, comment.commentedUserName, loginAccount)) {
+-          Ok(deleteComment(repository.owner, repository.name, comment.issueId, comment.commentId))
++      if (isIssueCommentEnabled(repository.owner, repository.name)) {
++        getComment(repository.owner, repository.name, params("id")).map { comment =>
++          if (isDeletableComment(repository.owner, repository.name, comment.commentedUserName, loginAccount)) {
++            Ok(deleteComment(repository.owner, repository.name, comment.issueId, comment.commentId))
+         } else Unauthorized()
+       } getOrElse NotFound()
+     }
+diff --git a/src/main/scala/gitbucket/core/controller/RepositorySettingsController.scala b/src/main/scala/gitbucket/core/controller/RepositorySettingsController.scala
+index 6a46c533..4a44e278 100644
+--- a/src/main/scala/gitbucket/core/controller/RepositorySettingsController.scala
++++ b/src/main/scala/gitbucket/core/controller/RepositorySettingsController.scala
+@@ -51,7 +51,8 @@ trait RepositorySettingsControllerBase extends ControllerBase {
+     allowFork: Boolean,
+     mergeOptions: Seq[String],
+     defaultMergeOption: String,
+-    safeMode: Boolean
++    safeMode: Boolean,
++    enableIssueComment: Boolean
+   )
+ 
+   private val optionsForm = mapping(
+@@ -64,7 +65,8 @@ trait RepositorySettingsControllerBase extends ControllerBase {
+     "allowFork" -> trim(label("Allow Forking", boolean())),
+     "mergeOptions" -> mergeOptions,
+     "defaultMergeOption" -> trim(label("Default merge strategy", text(required))),
+-    "safeMode" -> trim(label("XSS protection", boolean()))
++    "safeMode" -> trim(label("XSS protection", boolean())),
++    "enableIssueComment" -> trim(label("Enable Issue Comment", boolean()))
+   )(OptionsForm.apply).verifying { form =>
+     if (!form.mergeOptions.contains(form.defaultMergeOption)) {
+       Seq("defaultMergeOption" -> s"This merge strategy isn't enabled.")
+@@ -168,7 +170,8 @@ trait RepositorySettingsControllerBase extends ControllerBase {
+       form.allowFork,
+       form.mergeOptions,
+       form.defaultMergeOption,
+-      form.safeMode
++      form.safeMode,
++      form.enableIssueComment
+     )
+     flash.update("info", "Repository settings has been updated.")
+     redirect(s"/${repository.owner}/${repository.name}/settings/options")
+diff --git a/src/main/scala/gitbucket/core/model/Repository.scala b/src/main/scala/gitbucket/core/model/Repository.scala
+index 121f9be9..f100ab4f 100644
+--- a/src/main/scala/gitbucket/core/model/Repository.scala
++++ b/src/main/scala/gitbucket/core/model/Repository.scala
+@@ -25,6 +25,7 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
+     val mergeOptions = column[String]("MERGE_OPTIONS")
+     val defaultMergeOption = column[String]("DEFAULT_MERGE_OPTION")
+     val safeMode = column[Boolean]("SAFE_MODE")
++    val enableIssueComment = column[Boolean]("ENABLE_ISSUE_COMMENT")
+ 
+     def * =
+       (
+@@ -50,7 +51,8 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
+           allowFork,
+           mergeOptions,
+           defaultMergeOption,
+-          safeMode
++          safeMode,
++          enableIssueComment
+         )
+       ).shaped.<>(
+         { case (repository, options) =>
+@@ -123,5 +125,6 @@ case class RepositoryOptions(
+   allowFork: Boolean,
+   mergeOptions: String,
+   defaultMergeOption: String,
+-  safeMode: Boolean
++  safeMode: Boolean,
++  enableIssueComment: Boolean
+ )
+diff --git a/src/main/scala/gitbucket/core/service/IssuesService.scala b/src/main/scala/gitbucket/core/service/IssuesService.scala
+index 98323338..0af5c439 100644
+--- a/src/main/scala/gitbucket/core/service/IssuesService.scala
++++ b/src/main/scala/gitbucket/core/service/IssuesService.scala
+@@ -577,6 +577,12 @@ trait IssuesService {
+     IssueLabels filter (_.byIssue(owner, repository, issueId)) delete
+   }
+ 
++  def isIssueCommentEnabled(owner: String, repository: String)(implicit s: Session): Boolean = {
++    getRepository(owner, repository).map { repo =>
++      repo.repository.options.enableIssueComment
++    }.getOrElse(false)
++  }
++
+   def createComment(
+     owner: String,
+     repository: String,
+diff --git a/src/main/scala/gitbucket/core/service/RepositoryService.scala b/src/main/scala/gitbucket/core/service/RepositoryService.scala
+index e0df0a3b..8bb8d128 100644
+--- a/src/main/scala/gitbucket/core/service/RepositoryService.scala
++++ b/src/main/scala/gitbucket/core/service/RepositoryService.scala
+@@ -544,7 +544,8 @@ trait RepositoryService {
+     allowFork: Boolean,
+     mergeOptions: Seq[String],
+     defaultMergeOption: String,
+-    safeMode: Boolean
++    safeMode: Boolean,
++    enableIssueComment: Boolean
+   )(implicit s: Session): Unit = {
+ 
+     Repositories
+@@ -561,6 +562,7 @@ trait RepositoryService {
+           r.mergeOptions,
+           r.defaultMergeOption,
+           r.safeMode,
++          r.enableIssueComment,
+           r.updatedDate
+         )
+       }
+@@ -575,6 +577,7 @@ trait RepositoryService {
+         mergeOptions.mkString(","),
+         defaultMergeOption,
+         safeMode,
++        enableIssueComment,
+         currentDate
+       )
+   }
+diff --git a/src/main/twirl/gitbucket/core/settings/options.scala.html b/src/main/twirl/gitbucket/core/settings/options.scala.html
+index e967ef36..e8428fbd 100644
+--- a/src/main/twirl/gitbucket/core/settings/options.scala.html
++++ b/src/main/twirl/gitbucket/core/settings/options.scala.html
+@@ -78,6 +78,13 @@
+                 <span class="normal muted">(Fill if you use an external issue tracking system for this project)</span>
+               </label>
+               <input type="text" class="form-control" id="externalIssuesUrl" name="externalIssuesUrl" value="@repository.repository.options.externalIssuesUrl"/>
++              <label class="checkbox" for="enableIssueComment">
++                <input type="checkbox" id="enableIssueComment" name="enableIssueComment"@if(repository.repository.options.enableIssueComment){ checked}/>
++                Enable issue comments<br>
++                <div class="normal muted">
++                  Allow users to add comments to issues and pull requests.
++                </div>
++              </label>
+             </fieldset>
+           </div>
+         </div>

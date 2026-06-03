@@ -78,6 +78,13 @@
                 <span class="normal muted">(Fill if you use an external issue tracking system for this project)</span>
               </label>
               <input type="text" class="form-control" id="externalIssuesUrl" name="externalIssuesUrl" value="@repository.repository.options.externalIssuesUrl"/>
+              <label class="checkbox" for="enableIssueComment">
+                <input type="checkbox" id="enableIssueComment" name="enableIssueComment"@if(repository.repository.options.enableIssueComment){ checked}/>
+                Enable issue comments<br>
+                <div class="normal muted">
+                  Allow users to add comments to issues and pull requests.
+                </div>
+              </label>
             </fieldset>
           </div>
         </div>

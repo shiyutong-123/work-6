@@ -577,6 +577,12 @@ trait IssuesService {
     IssueLabels filter (_.byIssue(owner, repository, issueId)) delete
   }
 
+  def isIssueCommentEnabled(owner: String, repository: String)(implicit s: Session): Boolean = {
+    getRepository(owner, repository).map { repo =>
+      repo.repository.options.enableIssueComment
+    }.getOrElse(false)
+  }
+
   def createComment(
     owner: String,
     repository: String,

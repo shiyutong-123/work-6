@@ -1,0 +1,48 @@
+diff --git a/src/main/scala/gitbucket/core/GitBucketCoreModule.scala b/src/main/scala/gitbucket/core/GitBucketCoreModule.scala
+index ff4b726d..2e9e01d2 100644
+--- a/src/main/scala/gitbucket/core/GitBucketCoreModule.scala
++++ b/src/main/scala/gitbucket/core/GitBucketCoreModule.scala
+@@ -124,7 +124,8 @@ object GitBucketCoreModule
+       new Version("4.44.0", new LiquibaseMigration("update/gitbucket-core_4.44.xml")),
+       new Version("4.45.0"),
+       new Version("4.46.0", new LiquibaseMigration("update/gitbucket-core_4.46.xml")),
+-      new Version("4.46.1")
++      new Version("4.46.1"),
++      new Version("4.47.0", new SqlMigration("update/gitbucket-core_4.47.sql"))
+     ) {
+   java.util.logging.Logger.getLogger("liquibase").setLevel(Level.SEVERE)
+ }
+diff --git a/src/main/scala/gitbucket/core/model/Repository.scala b/src/main/scala/gitbucket/core/model/Repository.scala
+index 121f9be9..9909f527 100644
+--- a/src/main/scala/gitbucket/core/model/Repository.scala
++++ b/src/main/scala/gitbucket/core/model/Repository.scala
+@@ -40,7 +40,8 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
+           originUserName.?,
+           originRepositoryName.?,
+           parentUserName.?,
+-          parentRepositoryName.?
++          parentRepositoryName.?,
++          lastSyncTime
+         ),
+         (
+           issuesOption,
+@@ -112,6 +113,7 @@ case class Repository(
+   originRepositoryName: Option[String],
+   parentUserName: Option[String],
+   parentRepositoryName: Option[String],
++  lastSyncTime: Option[java.util.Date] = None,
+   options: RepositoryOptions
+ )
+ 
+diff --git a/src/main/scala/gitbucket/core/service/RepositoryService.scala b/src/main/scala/gitbucket/core/service/RepositoryService.scala
+index e0df0a3b..5e30bdeb 100644
+--- a/src/main/scala/gitbucket/core/service/RepositoryService.scala
++++ b/src/main/scala/gitbucket/core/service/RepositoryService.scala
+@@ -54,6 +54,7 @@ trait RepositoryService {
+         originRepositoryName = originRepositoryName,
+         parentUserName = parentUserName,
+         parentRepositoryName = parentRepositoryName,
++        lastSyncTime = None,
+         options = RepositoryOptions(
+           issuesOption = "PUBLIC", // TODO DISABLE for the forked repository?
+           externalIssuesUrl = None,

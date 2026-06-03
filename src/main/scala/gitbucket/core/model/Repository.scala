@@ -40,7 +40,8 @@ trait RepositoryComponent extends TemplateComponent { self: Profile =>
           originUserName.?,
           originRepositoryName.?,
           parentUserName.?,
-          parentRepositoryName.?
+          parentRepositoryName.?,
+          lastSyncTime
         ),
         (
           issuesOption,
@@ -112,6 +113,7 @@ case class Repository(
   originRepositoryName: Option[String],
   parentUserName: Option[String],
   parentRepositoryName: Option[String],
+  lastSyncTime: Option[java.util.Date] = None,
   options: RepositoryOptions
 )
 

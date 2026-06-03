@@ -1,11 +1,12 @@
 package gitbucket.core.plugin
 
 import java.io.{File, FilenameFilter}
-import java.net.URLClassLoader
+import java.net.{URL, URLClassLoader}
 import java.nio.file.{Files, Paths, StandardWatchEventKinds}
-import java.util.Base64
-import java.util.concurrent.ConcurrentLinkedQueue
+import java.sql.Connection
+import java.util.{Base64, ServiceLoader}
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import javax.servlet.ServletContext
 import com.github.zafarkhaja.semver.Version
 import gitbucket.core.controller.{Context, ControllerBase}
@@ -80,7 +81,7 @@ class PluginRegistry {
   def getAnonymousAccessiblePaths(): Seq[String] = anonymousAccessiblePaths.asScala.toSeq
 
   def addJavaScript(path: String, script: String): Unit =
-    javaScripts.add((path, script)) // javaScripts += ((path, script))
+    javaScripts.add((path, script))
 
   def getJavaScript(currentPath: String): List[String] =
     javaScripts.asScala.filter(x => currentPath.matches(x._1)).toList.map(_._2)
@@ -97,9 +98,8 @@ class PluginRegistry {
 
   def getRepositoryRouting(repositoryPath: String): Option[GitRepositoryRouting] = {
     PluginRegistry().getRepositoryRoutings().find {
-      case GitRepositoryRouting(urlPath, _, _) => {
+      case GitRepositoryRouting(urlPath, _, _) =>
         repositoryPath.matches("/" + urlPath + "(/.*)?")
-      }
     }
   }
 
@@ -190,11 +190,14 @@ class PluginRegistry {
 object PluginRegistry {
 
   private val logger = LoggerFactory.getLogger(classOf[PluginRegistry])
+  private val pluginServiceResource = s"META-INF/services/${classOf[Plugin].getName}"
 
   private var instance = new PluginRegistry()
-
-  private var watcher: PluginWatchThread = null
-  private var extraWatcher: PluginWatchThread = null
+  private var watcherThreads = Vector.empty[PluginWatchThread]
+  private var watchedDirectories = Vector.empty[String]
+  private var externalPluginCache = Map.empty[String, ExternalPluginCacheEntry]
+  private var activePlugins = Vector.empty[ActivePluginRuntime]
+  private var cachedSnapshot = PluginSnapshot.empty
 
   /**
    * Returns the PluginRegistry singleton instance.
@@ -204,16 +207,14 @@ object PluginRegistry {
   /**
    * Reload all plugins.
    */
-  def reload(context: ServletContext, settings: SystemSettings, conn: java.sql.Connection): Unit = synchronized {
-    shutdown(context, settings)
-    instance = new PluginRegistry()
-    initialize(context, settings, conn)
+  def reload(context: ServletContext, settings: SystemSettings, conn: Connection): Unit = synchronized {
+    refresh(context, settings, conn, forceReload = false)
   }
 
   /**
    * Uninstall a specified plugin.
    */
-  def uninstall(pluginId: String, context: ServletContext, settings: SystemSettings, conn: java.sql.Connection): Unit =
+  def uninstall(pluginId: String, context: ServletContext, settings: SystemSettings, conn: Connection): Unit =
     synchronized {
       shutdown(context, settings)
 
@@ -223,16 +224,15 @@ object PluginRegistry {
         })
         .foreach(_.delete())
 
-      instance = new PluginRegistry()
       initialize(context, settings, conn)
     }
 
   private def listPluginJars(dir: File): Seq[File] = {
-    dir
-      .listFiles(new FilenameFilter {
-        override def accept(dir: File, name: String): Boolean = name.endsWith(".jar")
-      })
-      .toSeq
+    Option(dir.listFiles(new FilenameFilter {
+      override def accept(dir: File, name: String): Boolean = name.endsWith(".jar")
+    }))
+      .map(_.toSeq)
+      .getOrElse(Nil)
       .sortBy(x => Version.parse(getPluginVersion(x.getName)))
       .reverse
   }
@@ -263,116 +263,18 @@ object PluginRegistry {
   /**
    * Initializes all installed plugins.
    */
-  def initialize(context: ServletContext, settings: SystemSettings, conn: java.sql.Connection): Unit = synchronized {
-    val pluginDir = new File(PluginHome)
-    val manager = new JDBCVersionManager(conn)
-
-    // Clean installed directory
-    val installedDir = new File(PluginHome, ".installed")
-    if (installedDir.exists) {
-      FileUtils.deleteDirectory(installedDir)
-    }
-    installedDir.mkdirs()
-
-    val pluginJars = listPluginJars(pluginDir)
-
-    val extraJars = extraPluginDir
-      .map { extraDir =>
-        listPluginJars(new File(extraDir))
-      }
-      .getOrElse(Nil)
-
-    (extraJars ++ pluginJars).foreach { pluginJar =>
-      val installedJar = new File(installedDir, pluginJar.getName)
-
-      FileUtils.copyFile(pluginJar, installedJar)
-      logger.info(s"Initialize ${pluginJar.getName}")
-      val classLoader =
-        new URLClassLoader(Array(installedJar.toURI.toURL), Thread.currentThread.getContextClassLoader)
-      try {
-        val plugin = classLoader.loadClass("Plugin").getDeclaredConstructor().newInstance().asInstanceOf[Plugin]
-        val pluginId = plugin.pluginId
-
-        // Check duplication
-        instance.getPlugins().find(_.pluginId == pluginId) match {
-          case Some(x) =>
-            logger.warn(s"Plugin ${pluginId} is duplicated. ${x.pluginJar.getName} is available.")
-            classLoader.close()
-          case None =>
-            // Migration
-            val solidbase = new Solidbase()
-            solidbase
-              .migrate(
-                conn,
-                classLoader,
-                DatabaseConfig.liquiDriver,
-                new Module(plugin.pluginId, plugin.versions*)
-              )
-            conn.commit()
-
-            // Check database version
-            val databaseVersion = manager.getCurrentVersion(plugin.pluginId)
-            val pluginVersion = plugin.versions.last.getVersion
-            if (databaseVersion != pluginVersion) {
-              throw new IllegalStateException(
-                s"Plugin version is ${pluginVersion}, but database version is ${databaseVersion}"
-              )
-            }
-
-            // Initialize
-            plugin.initialize(instance, context, settings)
-            instance.addPlugin(
-              PluginInfo(
-                pluginId = plugin.pluginId,
-                pluginName = plugin.pluginName,
-                pluginVersion = plugin.versions.last.getVersion,
-                gitbucketVersion = getGitBucketVersion(installedJar.getName),
-                description = plugin.description,
-                pluginClass = plugin,
-                pluginJar = pluginJar,
-                classLoader = classLoader
-              )
-            )
-        }
-      } catch {
-        case e: Throwable =>
-          logger.error(s"Error during plugin initialization: ${pluginJar.getName}", e)
-          classLoader.close()
-      }
-    }
-
-    if (watcher == null) {
-      watcher = new PluginWatchThread(context, PluginHome)
-      watcher.start()
-    }
-
-    extraPluginDir.foreach { extraDir =>
-      if (extraWatcher == null) {
-        extraWatcher = new PluginWatchThread(context, extraDir)
-        extraWatcher.start()
-      }
-    }
+  def initialize(context: ServletContext, settings: SystemSettings, conn: Connection): Unit = synchronized {
+    refresh(context, settings, conn, forceReload = true)
   }
 
   def shutdown(context: ServletContext, settings: SystemSettings): Unit = synchronized {
-    instance.getPlugins().foreach { plugin =>
-      try {
-        plugin.pluginClass.shutdown(instance, context, settings)
-        if (watcher != null) {
-          watcher.interrupt()
-          watcher = null
-        }
-        if (extraWatcher != null) {
-          extraWatcher.interrupt()
-          extraWatcher = null
-        }
-      } catch {
-        case e: Exception =>
-          logger.error(s"Error during plugin shutdown: ${plugin.pluginJar.getName}", e)
-      } finally {
-        plugin.classLoader.close()
-      }
-    }
+    stopWatchers()
+    shutdownActivePlugins(context, settings)
+    closeObsoleteCacheEntries(Map.empty)
+    externalPluginCache = Map.empty
+    cachedSnapshot = PluginSnapshot.empty
+    activePlugins = Vector.empty
+    instance = new PluginRegistry()
   }
 
   def getPluginInfoFromClassLoader(classLoader: ClassLoader): Option[PluginInfo] = {
@@ -381,6 +283,327 @@ object PluginRegistry {
       .find { info =>
         info.classLoader.equals(classLoader)
       }
+  }
+
+  private def refresh(context: ServletContext, settings: SystemSettings, conn: Connection, forceReload: Boolean): Unit = {
+    val discovery = discoverPlugins()
+
+    if (!forceReload && discovery.snapshot == cachedSnapshot) {
+      logger.info("No plugin changes detected. Skip reloading plugins.")
+      restartWatchers(context, discovery.watchDirectories)
+      return
+    }
+
+    shutdownActivePlugins(context, settings)
+
+    val newRegistry = new PluginRegistry()
+    val manager = new JDBCVersionManager(conn)
+    val initializedPlugins = initializePlugins(discovery.candidates, newRegistry, context, settings, conn, manager)
+
+    instance = newRegistry
+    activePlugins = initializedPlugins
+    cachedSnapshot = discovery.snapshot
+    closeObsoleteCacheEntries(discovery.externalCache)
+    externalPluginCache = discovery.externalCache
+    restartWatchers(context, discovery.watchDirectories)
+  }
+
+  private def initializePlugins(
+    candidates: Seq[PluginCandidate],
+    registry: PluginRegistry,
+    context: ServletContext,
+    settings: SystemSettings,
+    conn: Connection,
+    manager: JDBCVersionManager
+  ): Vector[ActivePluginRuntime] = {
+    val active = Vector.newBuilder[ActivePluginRuntime]
+
+    candidates.foreach { candidate =>
+      val plugin = candidate.plugin
+      val pluginId = plugin.pluginId
+
+      registry.getPlugins().find(_.pluginId == pluginId) match {
+        case Some(existing) =>
+          logger.warn(s"Plugin ${pluginId} is duplicated. ${existing.pluginJar.getName} is available.")
+        case None =>
+          try {
+            logger.info(s"Initialize ${candidate.pluginJar.getName}")
+            val solidbase = new Solidbase()
+            solidbase
+              .migrate(
+                conn,
+                candidate.classLoader,
+                DatabaseConfig.liquiDriver,
+                new Module(plugin.pluginId, plugin.versions*)
+              )
+            conn.commit()
+
+            val databaseVersion = manager.getCurrentVersion(plugin.pluginId)
+            val pluginVersion = plugin.versions.last.getVersion
+            if (databaseVersion != pluginVersion) {
+              throw new IllegalStateException(
+                s"Plugin version is ${pluginVersion}, but database version is ${databaseVersion}"
+              )
+            }
+
+            plugin.initialize(registry, context, settings)
+            registry.addPlugin(
+              PluginInfo(
+                pluginId = plugin.pluginId,
+                pluginName = plugin.pluginName,
+                pluginVersion = pluginVersion,
+                gitbucketVersion = getGitBucketVersion(candidate.pluginJar.getName),
+                description = plugin.description,
+                pluginClass = plugin,
+                pluginJar = candidate.pluginJar,
+                classLoader = candidate.classLoader
+              )
+            )
+            active += ActivePluginRuntime(plugin)
+          } catch {
+            case e: Throwable =>
+              logger.error(s"Error during plugin initialization: ${candidate.pluginJar.getName}", e)
+          }
+      }
+    }
+
+    active.result()
+  }
+
+  private def discoverPlugins(): PluginDiscovery = {
+    val externalJars = pluginDirectories.flatMap(listPluginJars)
+    val nextExternalCache = scala.collection.mutable.LinkedHashMap.empty[String, ExternalPluginCacheEntry]
+
+    val externalCandidates = externalJars.flatMap { pluginJar =>
+      val sourceJar = canonicalFile(pluginJar)
+      val cacheKey = sourceJar.getAbsolutePath
+      val fingerprint = PluginArtifactFingerprint(cacheKey, sourceJar.length(), sourceJar.lastModified())
+      val cacheEntry = externalPluginCache.get(cacheKey) match {
+        case Some(existing) if existing.fingerprint == fingerprint => existing
+        case _                                                    => createExternalPluginCacheEntry(sourceJar, fingerprint)
+      }
+
+      nextExternalCache.update(cacheKey, cacheEntry)
+      loadExternalPlugins(cacheEntry)
+    }
+
+    val classpathCandidates = loadClasspathPlugins()
+    val candidates = externalCandidates ++ classpathCandidates
+
+    val snapshot = PluginSnapshot(
+      candidates
+        .map(candidate => PluginSnapshotEntry(
+          candidate.pluginJar.getAbsolutePath,
+          candidate.plugin.getClass.getName,
+          candidate.pluginJar.length(),
+          candidate.pluginJar.lastModified()
+        ))
+        .distinct
+        .sortBy(entry => (entry.sourcePath, entry.providerClassName))
+    )
+
+    val watchDirectories = (
+      pluginDirectories ++ classpathCandidates.flatMap(candidate => Option(candidate.pluginJar.getParentFile))
+    ).flatMap(normalizeDirectory)
+      .distinct
+      .sorted
+
+    PluginDiscovery(candidates, snapshot, nextExternalCache.toMap, watchDirectories)
+  }
+
+  private def loadExternalPlugins(cacheEntry: ExternalPluginCacheEntry): Seq[PluginCandidate] = {
+    val plugins = {
+      val serviceLoaded = loadPluginsFromServiceLoader(cacheEntry.classLoader)
+      if (serviceLoaded.nonEmpty) serviceLoaded else loadLegacyPlugin(cacheEntry.classLoader).toSeq
+    }
+
+    if (plugins.isEmpty) {
+      logger.warn(s"No plugin provider found in ${cacheEntry.sourceJar.getName}")
+    }
+
+    plugins.map { plugin =>
+      PluginCandidate(
+        plugin = plugin,
+        pluginJar = cacheEntry.sourceJar,
+        classLoader = cacheEntry.classLoader
+      )
+    }
+  }
+
+  private def loadClasspathPlugins(): Seq[PluginCandidate] = {
+    val classLoader = Thread.currentThread.getContextClassLoader
+    loadPluginsFromServiceLoader(classLoader)
+      .map { plugin =>
+        val pluginJar = resolvePluginSource(plugin).getOrElse(new File(plugin.getClass.getName))
+        PluginCandidate(
+          plugin = plugin,
+          pluginJar = pluginJar,
+          classLoader = plugin.getClass.getClassLoader
+        )
+      }
+      .sortBy(candidate => (candidate.pluginJar.getAbsolutePath, candidate.plugin.getClass.getName))
+  }
+
+  private def loadPluginsFromServiceLoader(classLoader: ClassLoader): Seq[Plugin] = {
+    val serviceLoader = ServiceLoader.load(classOf[Plugin], classLoader)
+    val iterator = serviceLoader.iterator()
+    val plugins = Vector.newBuilder[Plugin]
+
+    while ({
+      try {
+        iterator.hasNext
+      } catch {
+        case e: Throwable =>
+          logger.error(s"Error during plugin discovery from ${classLoader}", e)
+          false
+      }
+    }) {
+      try {
+        plugins += iterator.next()
+      } catch {
+        case e: Throwable =>
+          logger.error(s"Error during plugin instantiation from ${classLoader}", e)
+      }
+    }
+
+    plugins.result()
+  }
+
+  private def loadLegacyPlugin(classLoader: ClassLoader): Option[Plugin] = {
+    try {
+      Some(classLoader.loadClass("Plugin").getDeclaredConstructor().newInstance().asInstanceOf[Plugin])
+    } catch {
+      case _: ClassNotFoundException => None
+      case e: Throwable =>
+        logger.error(s"Error during legacy plugin instantiation from ${classLoader}", e)
+        None
+    }
+  }
+
+  private def pluginDirectories: Seq[File] =
+    extraPluginDir.map(dir => canonicalFile(new File(dir))).toSeq ++ Seq(canonicalFile(new File(PluginHome)))
+
+  private def createExternalPluginCacheEntry(
+    sourceJar: File,
+    fingerprint: PluginArtifactFingerprint
+  ): ExternalPluginCacheEntry = {
+    val installedDir = new File(PluginHome, ".installed")
+    FileUtils.forceMkdir(installedDir)
+
+    val artifactDir = new File(installedDir, Integer.toHexString(sourceJar.getAbsolutePath.hashCode))
+    FileUtils.forceMkdir(artifactDir)
+
+    val stagedJar = new File(artifactDir, s"${fingerprint.lastModified}-${fingerprint.size}-${sourceJar.getName}")
+    if (!stagedJar.exists()) {
+      FileUtils.copyFile(sourceJar, stagedJar)
+    }
+
+    val classLoader = new PluginClassLoader(Array(stagedJar.toURI.toURL), Thread.currentThread.getContextClassLoader)
+    ExternalPluginCacheEntry(sourceJar.getAbsolutePath, sourceJar, fingerprint, stagedJar, classLoader)
+  }
+
+  private def closeObsoleteCacheEntries(nextCache: Map[String, ExternalPluginCacheEntry]): Unit = {
+    externalPluginCache.foreach { case (key, entry) =>
+      nextCache.get(key) match {
+        case Some(nextEntry) if nextEntry.eq(entry) => ()
+        case _                                      => closeCacheEntry(entry)
+      }
+    }
+  }
+
+  private def closeCacheEntry(entry: ExternalPluginCacheEntry): Unit = {
+    try {
+      entry.classLoader.close()
+    } catch {
+      case e: Exception => logger.error(s"Error during plugin class loader shutdown: ${entry.sourceJar.getName}", e)
+    }
+
+    if (entry.stagedJar.exists()) {
+      entry.stagedJar.delete()
+      Option(entry.stagedJar.getParentFile)
+        .filter(dir => Option(dir.list()).exists(_.isEmpty))
+        .foreach(_.delete())
+    }
+  }
+
+  private def shutdownActivePlugins(context: ServletContext, settings: SystemSettings): Unit = {
+    activePlugins.foreach { runtime =>
+      try {
+        runtime.plugin.shutdown(instance, context, settings)
+      } catch {
+        case e: Exception =>
+          val pluginName = resolvePluginSource(runtime.plugin)
+            .map(_.getName)
+            .getOrElse(runtime.plugin.getClass.getName)
+          logger.error(s"Error during plugin shutdown: ${pluginName}", e)
+      }
+    }
+    activePlugins = Vector.empty
+  }
+
+  private def restartWatchers(context: ServletContext, directories: Seq[String]): Unit = {
+    val normalized = directories.flatMap(dir => normalizeDirectory(new File(dir))).distinct.sorted.toVector
+    if (normalized == watchedDirectories) {
+      return
+    }
+
+    stopWatchers()
+    watchedDirectories = normalized
+    watcherThreads = normalized.map { dir =>
+      val watcher = new PluginWatchThread(context, dir)
+      watcher.start()
+      watcher
+    }
+  }
+
+  private def stopWatchers(): Unit = {
+    watcherThreads.foreach(_.interrupt())
+    watcherThreads = Vector.empty
+    watchedDirectories = Vector.empty
+  }
+
+  private def canonicalFile(file: File): File = {
+    try {
+      file.getCanonicalFile
+    } catch {
+      case _: Exception => file.getAbsoluteFile
+    }
+  }
+
+  private def normalizeDirectory(dir: File): Option[String] = {
+    val normalized = canonicalFile(dir)
+    val pluginHomeDir = canonicalFile(new File(PluginHome)).getAbsolutePath
+    Option(normalized)
+      .filter(_.exists() || normalized.getAbsolutePath == pluginHomeDir)
+      .filterNot(_.getName == ".installed")
+      .map(_.getAbsolutePath)
+  }
+
+  private def resolvePluginSource(plugin: Plugin): Option[File] = {
+    Option(plugin.getClass.getProtectionDomain)
+      .flatMap(domain => Option(domain.getCodeSource))
+      .flatMap(codeSource => Option(codeSource.getLocation))
+      .flatMap(urlToFile)
+      .map(canonicalFile)
+  }
+
+  private def urlToFile(url: URL): Option[File] = {
+    try {
+      if (url.getProtocol == "file") Some(new File(url.toURI)) else None
+    } catch {
+      case _: Exception => None
+    }
+  }
+
+  private class PluginClassLoader(urls: Array[URL], parent: ClassLoader)
+      extends URLClassLoader(urls, parent) {
+    override def getResource(name: String): URL = {
+      if (name == pluginServiceResource) findResource(name) else super.getResource(name)
+    }
+
+    override def getResources(name: String): java.util.Enumeration[URL] = {
+      if (name == pluginServiceResource) findResources(name) else super.getResources(name)
+    }
   }
 }
 
@@ -407,11 +630,55 @@ case class PluginInfo(
   override val description: String,
   pluginClass: Plugin,
   pluginJar: File,
-  classLoader: URLClassLoader
+  classLoader: ClassLoader
 ) extends PluginInfoBase(pluginId, pluginName, pluginVersion, gitbucketVersion, description)
 
+private case class PluginCandidate(
+  plugin: Plugin,
+  pluginJar: File,
+  classLoader: ClassLoader
+)
+
+private case class ActivePluginRuntime(
+  plugin: Plugin
+)
+
+private case class PluginArtifactFingerprint(
+  sourcePath: String,
+  size: Long,
+  lastModified: Long
+)
+
+private case class PluginSnapshotEntry(
+  sourcePath: String,
+  providerClassName: String,
+  size: Long,
+  lastModified: Long
+)
+
+private case class PluginSnapshot(entries: Seq[PluginSnapshotEntry])
+
+private object PluginSnapshot {
+  val empty: PluginSnapshot = PluginSnapshot(Nil)
+}
+
+private case class ExternalPluginCacheEntry(
+  key: String,
+  sourceJar: File,
+  fingerprint: PluginArtifactFingerprint,
+  stagedJar: File,
+  classLoader: URLClassLoader
+)
+
+private case class PluginDiscovery(
+  candidates: Seq[PluginCandidate],
+  snapshot: PluginSnapshot,
+  externalCache: Map[String, ExternalPluginCacheEntry],
+  watchDirectories: Seq[String]
+)
+
 class PluginWatchThread(context: ServletContext, dir: String) extends Thread with SystemSettingsService {
-  import gitbucket.core.model.Profile.profile.blockingApi._
+  import gitbucket.core.model.Profile.profile.blockingApi.*
 
   private val logger = LoggerFactory.getLogger(classOf[PluginWatchThread])
 
@@ -436,8 +703,9 @@ class PluginWatchThread(context: ServletContext, dir: String) extends Thread wit
     try {
       while (watchKey.isValid) {
         val detectedWatchKey = watcher.take()
-        val events = detectedWatchKey.pollEvents.asScala.filter { e =>
-          e.context.toString != ".installed" && !e.context.toString.endsWith(".bak")
+        val events = detectedWatchKey.pollEvents.asScala.filter { event =>
+          val name = event.context.toString
+          name != ".installed" && !name.endsWith(".bak") && (name.endsWith(".jar") || event.kind == StandardWatchEventKinds.OVERFLOW)
         }
         if (events.nonEmpty) {
           events.foreach { event =>

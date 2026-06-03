@@ -50,6 +50,7 @@ trait RepositoryService {
         registeredDate = currentDate,
         updatedDate = currentDate,
         lastActivityDate = currentDate,
+        lastSyncTime = None,
         originUserName = originUserName,
         originRepositoryName = originRepositoryName,
         parentUserName = parentUserName,

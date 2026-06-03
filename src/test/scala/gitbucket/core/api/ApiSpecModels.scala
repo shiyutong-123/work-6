@@ -58,6 +58,7 @@ object ApiSpecModels {
     registeredDate = date1,
     updatedDate = date1,
     lastActivityDate = date1,
+    lastSyncTime = None,
     originUserName = Some("octopus plus cat"),
     originRepositoryName = Some("Hello World"),
     parentUserName = Some("github"),

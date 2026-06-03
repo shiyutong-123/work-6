@@ -241,6 +241,7 @@ class MergeServiceSpec extends AnyFunSpec with ServiceSpecBase {
         registeredDate = new Date(),
         updatedDate = new Date(),
         lastActivityDate = new Date(),
+        lastSyncTime = None,
         originUserName = None,
         originRepositoryName = None,
         parentUserName = None,
